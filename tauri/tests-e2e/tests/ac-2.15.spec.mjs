@@ -30,5 +30,8 @@ for (const locale of ['zh-CN', 'pt-BR']) {
     for (const key of KEYS) {
       expect(source.includes(JSON.stringify(key)), `missing key ${JSON.stringify(key)} in ${locale}.js`).toBe(true);
     }
+    // "Remove {app}" is the ignored-apps row's accessible name (aria-label),
+    // built dynamically — covered by a pattern rule, not an exact key.
+    expect(source.includes('"^Remove (.+)$"'), `missing "Remove {app}" pattern rule in ${locale}.js`).toBe(true);
   });
 }

@@ -563,6 +563,7 @@ window.__MINUTES_I18N['zh-CN'] = {
     { re: "^Desktop app v(.+)$", to: "桌面应用 v$1" },
     { re: "^Downloading (.+) model\\.\\.\\.$", to: "正在下载 $1 模型…" },
     { re: "^Queued (\\d+)$", to: "已排队 $1" },
-    { re: "^(.+) call detected$", to: "检测到 $1 通话" }
+    { re: "^(.+) call detected$", to: "检测到 $1 通话" },
+    { re: "^Remove (.+)$", to: "移除 $1" }
   ]
 };

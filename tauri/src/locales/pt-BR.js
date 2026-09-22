@@ -1117,6 +1117,7 @@ window.__MINUTES_I18N['pt-BR'] = {
     { re: "^Ollama not reachable at (.+)$", to: "Ollama inacessível em $1" },
     { re: "^Phase: (.+)$", to: "Fase: $1" },
     { re: "^Using: (.+) \u2014 no API key needed, uses your existing subscription$", to: "Usando: $1, sem precisar de chave de API, usa sua assinatura atual" },
-    { re: "^Meetings: (.+) \\((\\d+) files\\) • Memos: (.+) \\((\\d+)\\) • Models: (.+) • Screenshots: (.+) • Total: (.+)$", to: "Reuniões: $1 ($2 arquivos) • Ideias rápidas: $3 ($4) • Modelos: $5 • Capturas de tela: $6 • Total: $7" }
+    { re: "^Meetings: (.+) \\((\\d+) files\\) • Memos: (.+) \\((\\d+)\\) • Models: (.+) • Screenshots: (.+) • Total: (.+)$", to: "Reuniões: $1 ($2 arquivos) • Ideias rápidas: $3 ($4) • Modelos: $5 • Capturas de tela: $6 • Total: $7" },
+    { re: "^Remove (.+)$", to: "Remover $1" }
   ]
 };

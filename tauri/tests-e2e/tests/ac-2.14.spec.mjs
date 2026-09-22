@@ -86,24 +86,40 @@ test('the Remove button has a name-specific accessible label', async ({ page }) 
 
 test('the prompt_card toggle and ignored-apps list reflect the persisted value after Settings is reopened', async ({ page }) => {
   const settings = settingsFixture({
-    call_detection: { ...settingsFixture().call_detection, prompt_card: true, ignored_apps: ['Slack'] },
+    call_detection: { ...settingsFixture().call_detection, prompt_card: true, ignored_apps: ['Slack', 'Webex'] },
   });
   await openCallDetectionSettings(page, { setDefault, settings });
   await expect(page.locator('#settings-call-detection-prompt-card')).toHaveText('On');
 
   await page.locator('#settings-call-detection-prompt-card').click();
   await expect(page.locator('#settings-call-detection-prompt-card')).toHaveText('Off');
+
+  await page.locator('#settings-ignored-apps-list .about-controls', { hasText: 'Slack' })
+    .locator('button', { hasText: 'Remove' })
+    .click();
+
+  // Derive the "persisted" state from the writes the handlers actually made
+  // — not hand-fed — so this fails if reload-on-open regresses to stale DOM.
+  const log = await callLog(page, 'cmd_set_setting');
+  const toggleWrite = log.find((c) => c.args.key === 'prompt_card');
+  const ignoredWrite = log.find((c) => c.args.key === 'ignored_apps');
+  expect(toggleWrite.args).toEqual({ section: 'call_detection', key: 'prompt_card', value: 'false' });
+  expect(ignoredWrite.args).toEqual({ section: 'call_detection', key: 'ignored_apps', value: JSON.stringify(['Webex']) });
+
   await page.locator('#btn-settings-close').click();
 
-  // Simulate the write that just happened having persisted: the next
-  // cmd_get_settings the reopened panel fetches reflects it.
   await setDefault(page, 'cmd_get_settings', settingsFixture({
-    call_detection: { ...settingsFixture().call_detection, prompt_card: false, ignored_apps: ['Slack'] },
+    call_detection: {
+      ...settingsFixture().call_detection,
+      prompt_card: toggleWrite.args.value === 'true',
+      ignored_apps: JSON.parse(ignoredWrite.args.value),
+    },
   }));
   await page.locator('#btn-settings').click();
   await page.locator('#tab-ai').click();
   await page.waitForSelector('#settings-call-detection-prompt-card', { state: 'visible' });
 
   await expect(page.locator('#settings-call-detection-prompt-card')).toHaveText('Off');
-  await expect(page.locator('#settings-ignored-apps-list')).toContainText('Slack');
+  await expect(page.locator('#settings-ignored-apps-list')).toContainText('Webex');
+  await expect(page.locator('#settings-ignored-apps-list')).not.toContainText('Slack');
 });

@@ -16186,8 +16186,10 @@ mod tests {
             )
             .unwrap();
             assert!(!Config::load().call_detection.prompt_card);
+            assert_eq!(cmd_get_settings()["call_detection"]["prompt_card"], false);
             cmd_set_setting("call_detection".into(), "prompt_card".into(), "true".into()).unwrap();
             assert!(Config::load().call_detection.prompt_card);
+            assert_eq!(cmd_get_settings()["call_detection"]["prompt_card"], true);
 
             let apps = serde_json::json!(["Zoom, Inc", "Webex"]).to_string();
             cmd_set_setting("call_detection".into(), "ignored_apps".into(), apps).unwrap();
