@@ -18,12 +18,22 @@ export const INDEX_HTML_URL = `file://${INDEX_HTML_PATH}`;
  * number of times) rather than a consumed queue, matching how the two
  * independent pollers would agree on shared backend state for real.
  */
+/**
+ * install() alone leaves the clock running in real time; pauseAt is what
+ * actually freezes it so only explicit fastForward/runFor calls move it.
+ * pauseAt(0) races the real milliseconds that elapse between the two calls
+ * and intermittently throws "Cannot fast-forward to the past", so pause a
+ * minute past the install epoch instead. Nothing has been navigated yet, so
+ * no page timer fires, and every test asserts relative fastForward deltas.
+ */
+async function installPausedClock(page) {
+  await page.clock.install({ time: 0 });
+  await page.clock.pauseAt(60_000);
+}
+
 export async function openIndex(page, { useClock = true } = {}) {
   if (useClock) {
-    await page.clock.install({ time: 0 });
-    // install() alone leaves the clock running in real time; pauseAt is what
-    // actually freezes it so only explicit fastForward/runFor calls move it.
-    await page.clock.pauseAt(0);
+    await installPausedClock(page);
   }
   await installTauriStub(page);
   await page.goto(INDEX_HTML_URL);
@@ -108,8 +118,7 @@ export function meetingDetectedPayload({ appName = 'Microsoft Teams', processNam
  */
 export async function openMeetingDetected(page, { token = 1, payload, dismissMs, useClock = false } = {}) {
   if (useClock) {
-    await page.clock.install({ time: 0 });
-    await page.clock.pauseAt(0);
+    await installPausedClock(page);
   }
   await installTauriStub(page);
   await page.addInitScript((p) => {
