@@ -15477,7 +15477,17 @@
         }
 
         const question = recallTerminalInputDraft.trim();
-        if (recallTerminalContextPending && (!question || !recallTerminalInputReliable)) {
+        if (recallTerminalContextPending && !question) {
+          // A bare Enter is not a question: it answers a prompt the agent
+          // itself is showing (Claude Code's folder-trust dialog, a menu).
+          // Forward it untouched and read no meeting bytes; the gate stays
+          // armed for the first real question.
+          await invoke('cmd_pty_input', { sessionId: SESSION_ID, data: char });
+          recallTerminalInputReliable = true;
+          cursor = index + 1;
+          continue;
+        }
+        if (recallTerminalContextPending && !recallTerminalInputReliable) {
           setRecallProviderNotice(
             'For privacy, Minutes could not verify a complete question or command. Press Ctrl-U, retype it without cursor editing, and submit again. No meeting context was read.',
             'error'
