@@ -1,0 +1,13 @@
+{
+  "name": "minutes-tauri-tests-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright harness for tauri/src/*.html against file:// with a stubbed window.__TAURI__. Isolated from the rest of the workspace on purpose (spec: live-notes-mic-prompt-setup.md section 5) — not part of crates/mcp.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

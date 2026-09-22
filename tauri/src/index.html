@@ -1716,6 +1716,106 @@
       font-variant-numeric: tabular-nums;
     }
 
+    /* ── Live view pane (REQ-1): live transcript + notes while recording ── */
+    .live-pane {
+      display: none;
+      flex-direction: column;
+      min-height: 0;
+      position: relative;
+    }
+
+    .live-pane.active {
+      display: flex;
+      flex: 1;
+    }
+
+    /* While the pane owns the view, the browse surfaces below it step aside
+       instead of fighting it for the same flex-1 slot at a 460x520 minimum
+       (AC-1.9). .live-pane must precede both in DOM order for this to reach
+       them. */
+    .live-pane.active~.search-wrap,
+    .live-pane.active~#meetings-scroll {
+      display: none;
+    }
+
+    .live-pane-banner {
+      padding: 8px 16px;
+      font-size: var(--text-meta);
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .live-pane-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 4px 16px 44px;
+    }
+
+    .live-pane-diagnostic {
+      padding: 10px 0;
+      font-size: var(--text-meta);
+      color: var(--text-tertiary);
+    }
+
+    .live-pane-row {
+      padding: 5px 0;
+      font-size: var(--text-meta);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .live-pane-row-time {
+      font-family: var(--font-mono);
+      color: var(--text-tertiary);
+      margin-right: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .live-pane-row--note {
+      border-left: 3px solid var(--accent);
+      padding-left: 9px;
+      margin-left: -12px;
+    }
+
+    .live-pane-row-label {
+      font-weight: 600;
+      color: var(--accent);
+      margin-right: 6px;
+    }
+
+    .live-pane-row--marker {
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: var(--text-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 10px 0;
+    }
+
+    .live-pane-jump {
+      display: none;
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      appearance: none;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 14px;
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--text);
+      background: var(--bg-elevated);
+      box-shadow: 0 4px 12px var(--shadow-soft, rgba(0, 0, 0, 0.18));
+      cursor: pointer;
+    }
+
+    .live-pane-jump:not([hidden]) {
+      display: inline-flex;
+    }
+
     /* ── Output notice ── */
     .output-notice {
       display: none;
@@ -5878,6 +5978,15 @@
       <div class="processing-summary" id="processing-summary"></div>
     </div>
 
+    <!-- Live view pane (REQ-1): live transcript + notes while recording -->
+    <div class="live-pane" id="live-pane">
+      <div class="live-pane-banner" id="live-pane-banner" hidden></div>
+      <div class="live-pane-list" id="live-pane-list" role="log" tabindex="0">
+        <div class="live-pane-diagnostic" id="live-pane-diagnostic" hidden></div>
+      </div>
+      <button type="button" class="live-pane-jump" id="live-pane-jump" hidden data-i18n="Jump to latest">Jump to latest</button>
+    </div>
+
     <!-- Output notice -->
     <div class="output-notice" id="output-notice">
       <div class="output-notice-row">
@@ -7529,6 +7638,11 @@
     const outputNoticeTitle = document.getElementById('output-notice-title');
     const outputNoticeDetail = document.getElementById('output-notice-detail');
     const outputNoticePath = document.getElementById('output-notice-path');
+    const livePane = document.getElementById('live-pane');
+    const livePaneBanner = document.getElementById('live-pane-banner');
+    const livePaneList = document.getElementById('live-pane-list');
+    const livePaneDiagnostic = document.getElementById('live-pane-diagnostic');
+    const livePaneJump = document.getElementById('live-pane-jump');
     const quickNote = document.getElementById('quick-note');
     const noteInput = document.getElementById('note-inline-input');
     const footer = document.getElementById('footer');
@@ -8723,6 +8837,243 @@
     function stopFastPoll() {
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     }
+
+    // ── Live view pane (REQ-1) ──
+    // Dedicated 1000ms timer, independent of checkStatus's variable-speed
+    // pollInterval, so the poll period stays exactly 1000ms whether or not
+    // anything else is fast-polling (AC-1.3). It runs for the app's lifetime:
+    // when idle it costs one cheap cmd_capture_status call per tick and is
+    // how a brand-new recording is noticed without a separate wakeup path.
+    const livePaneT = (key) => (window.MinutesI18n && window.MinutesI18n.t ? window.MinutesI18n.t(key) : key);
+    const LIVE_PANE_ROW_CAP = 2000;
+    const LIVE_PANE_BOTTOM_THRESHOLD = 24;
+
+    const liveView = {
+      afterLine: 0,
+      afterNote: 0,
+      totalLines: 0,
+      totalNotes: 0,
+      rowCount: 0,
+      paused: false,
+      unavailable: false,
+      shown: false,
+      wasRecording: false,
+    };
+    let livePaneTicking = false;
+
+    function liveViewFormatOffset(ms) {
+      const totalSecs = Math.max(0, Math.floor((ms || 0) / 1000));
+      const m = Math.floor(totalSecs / 60);
+      const s = totalSecs % 60;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function liveViewShowPane() {
+      liveView.shown = true;
+      livePane.classList.add('active');
+    }
+
+    // Also the AC-1.8 "user navigates to another view" hook: hiding here is
+    // safe to call unconditionally because the always-on tick loop re-shows
+    // the pane on its next tick if the recording is still active.
+    function liveViewHidePane() {
+      liveView.shown = false;
+      livePane.classList.remove('active');
+      livePaneBanner.hidden = true;
+    }
+
+    function liveViewReset() {
+      liveView.afterLine = 0;
+      liveView.afterNote = 0;
+      liveView.totalLines = 0;
+      liveView.totalNotes = 0;
+      liveView.rowCount = 0;
+      liveView.paused = false;
+      liveView.unavailable = false;
+      while (livePaneDiagnostic.nextElementSibling) {
+        livePaneList.removeChild(livePaneDiagnostic.nextElementSibling);
+      }
+      livePaneJump.hidden = true;
+    }
+
+    function liveViewIsNearBottom() {
+      return livePaneList.scrollHeight - livePaneList.scrollTop - livePaneList.clientHeight <= LIVE_PANE_BOTTOM_THRESHOLD;
+    }
+
+    function liveViewAppendRow(el) {
+      livePaneList.appendChild(el);
+      liveView.rowCount += 1;
+    }
+
+    function liveViewAppendLineRow(line) {
+      const row = document.createElement('div');
+      row.className = 'live-pane-row live-pane-row--line';
+      const time = document.createElement('span');
+      time.className = 'live-pane-row-time';
+      time.textContent = liveViewFormatOffset(line.offset_ms);
+      const text = document.createElement('span');
+      text.className = 'live-pane-row-text';
+      text.textContent = line.text;
+      row.append(time, text);
+      liveViewAppendRow(row);
+    }
+
+    function liveViewAppendNoteRow(note) {
+      const row = document.createElement('div');
+      row.className = 'live-pane-row live-pane-row--note';
+      const label = document.createElement('span');
+      label.className = 'live-pane-row-label';
+      label.textContent = livePaneT('Note');
+      const time = document.createElement('span');
+      time.className = 'live-pane-row-time';
+      time.textContent = liveViewFormatOffset(note.offset_ms);
+      const text = document.createElement('span');
+      text.className = 'live-pane-row-text';
+      text.textContent = note.text;
+      row.append(label, time, text);
+      liveViewAppendRow(row);
+    }
+
+    function liveViewAppendMarker() {
+      const row = document.createElement('div');
+      row.className = 'live-pane-row live-pane-row--marker';
+      row.textContent = livePaneT('Paused');
+      liveViewAppendRow(row);
+    }
+
+    function liveViewTrimRows() {
+      while (liveView.rowCount > LIVE_PANE_ROW_CAP) {
+        const oldest = livePaneDiagnostic.nextElementSibling;
+        if (!oldest) break;
+        livePaneList.removeChild(oldest);
+        liveView.rowCount -= 1;
+      }
+    }
+
+    // Rotated/new-recording backstop independent of the recording-flag-edge
+    // reset below: catches a rotation that happens while `recording` never
+    // reads false in between (AC-1.4).
+    function liveViewApplyPage(page) {
+      const lines = Array.isArray(page.lines) ? page.lines : [];
+      const notes = Array.isArray(page.notes) ? page.notes : [];
+      const totalLines = page.total_lines || 0;
+      const totalNotes = page.total_notes || 0;
+
+      if (totalLines < liveView.afterLine || totalNotes < liveView.afterNote) {
+        liveViewReset();
+      }
+
+      const items = lines.map((l) => ({ kind: 'line', offset_ms: l.offset_ms, data: l }))
+        .concat(notes.map((n) => ({ kind: 'note', offset_ms: n.offset_ms, data: n })));
+      items.sort((a, b) => a.offset_ms - b.offset_ms);
+
+      items.forEach((item) => {
+        if (item.kind === 'line') {
+          liveViewAppendLineRow(item.data);
+          if (item.data.line > liveView.afterLine) liveView.afterLine = item.data.line;
+        } else {
+          liveViewAppendNoteRow(item.data);
+          if (item.data.note > liveView.afterNote) liveView.afterNote = item.data.note;
+        }
+      });
+
+      liveView.totalLines = totalLines;
+      liveView.totalNotes = totalNotes;
+      return items.length > 0;
+    }
+
+    function liveViewAdjustScroll(wasNearBottom) {
+      if (wasNearBottom) {
+        livePaneList.scrollTop = livePaneList.scrollHeight;
+        livePaneJump.hidden = true;
+      } else {
+        livePaneJump.hidden = false;
+      }
+    }
+
+    function liveViewRenderDiagnostic(diagnosticText) {
+      if (liveView.unavailable) {
+        livePaneDiagnostic.hidden = false;
+        livePaneDiagnostic.textContent = livePaneT('Live view unavailable');
+      } else if (liveView.rowCount === 0) {
+        livePaneDiagnostic.hidden = false;
+        livePaneDiagnostic.textContent = diagnosticText || livePaneT('Waiting for speech…');
+      } else {
+        livePaneDiagnostic.hidden = true;
+      }
+    }
+
+    livePaneJump.addEventListener('click', () => {
+      livePaneList.scrollTop = livePaneList.scrollHeight;
+      livePaneJump.hidden = true;
+    });
+
+    livePaneList.addEventListener('scroll', () => {
+      if (!livePaneJump.hidden && liveViewIsNearBottom()) livePaneJump.hidden = true;
+    });
+
+    async function livePaneTick() {
+      if (livePaneTicking) return;
+      livePaneTicking = true;
+      try {
+        let status;
+        try {
+          status = await invoke('cmd_capture_status');
+        } catch (_) {
+          return;
+        }
+
+        const recording = !!status.recording;
+        const processing = !!status.processing;
+        const paused = !!status.paused;
+
+        if (!recording) {
+          if (liveView.shown) {
+            if (processing) {
+              livePaneBanner.hidden = false;
+              livePaneBanner.textContent = livePaneT('Recording stopped · processing…');
+            } else {
+              liveViewHidePane();
+            }
+          }
+          liveView.wasRecording = false;
+          return;
+        }
+
+        if (!liveView.wasRecording) liveViewReset();
+        liveViewShowPane();
+        livePaneBanner.hidden = true;
+        liveView.wasRecording = true;
+
+        const nearBottom = liveViewIsNearBottom();
+        let appended = false;
+
+        if (paused && !liveView.paused) {
+          liveViewAppendMarker();
+          appended = true;
+        }
+        liveView.paused = paused;
+
+        try {
+          const page = await invoke('cmd_live_view', { afterLine: liveView.afterLine, afterNote: liveView.afterNote });
+          liveView.unavailable = false;
+          if (liveViewApplyPage(page)) appended = true;
+        } catch (_) {
+          liveView.unavailable = true;
+        }
+
+        if (appended) liveViewAdjustScroll(nearBottom);
+        liveViewTrimRows();
+
+        const diagnosticText = (status.liveTranscript && status.liveTranscript.diagnostic) || '';
+        liveViewRenderDiagnostic(diagnosticText);
+      } finally {
+        livePaneTicking = false;
+      }
+    }
+
+    livePaneTick();
+    setInterval(livePaneTick, 1000);
 
     let outputNoticeAutoDismissTimer = null;
 
@@ -12070,6 +12421,7 @@
       // Reset to General tab on every open
       settingsTabs[0].click();
       loadSettings();
+      liveViewHidePane(); // AC-1.8: navigating to another view hides the live pane
     }
     function closeSettings() { settingsOverlay.classList.remove('active'); }
 

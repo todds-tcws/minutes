@@ -26,6 +26,15 @@ window.__MINUTES_I18N['pt-BR'] = {
     "Add Note": "Adicionar nota",
     "Add a note": "Adicionar uma nota",
     "Stop Recording": "Parar gravação",
+    "Paused": "Pausado",
+
+    // ── Live view pane (REQ-1) ──────────────────────────────────────
+    "Note": "Nota",
+    "Jump to latest": "Ir para o mais recente",
+    "Waiting for speech…": "Aguardando fala…",
+    "Recording stopped · processing…": "Gravação parada · processando…",
+    "Live view unavailable": "Visualização ao vivo indisponível",
+
     "Live Transcript": "Transcrição ao vivo",
     "Stop Live": "Parar ao vivo",
     "Processing": "Processando",

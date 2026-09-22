@@ -26,6 +26,15 @@ window.__MINUTES_I18N['zh-CN'] = {
     "Add Note": "添加笔记",
     "Add a note": "添加笔记",
     "Stop Recording": "停止录音",
+    "Paused": "已暂停",
+
+    // ── Live view pane (REQ-1) ──────────────────────────────────────
+    "Note": "笔记",
+    "Jump to latest": "跳到最新",
+    "Waiting for speech…": "等待语音…",
+    "Recording stopped · processing…": "录音已停止 · 处理中…",
+    "Live view unavailable": "实时视图不可用",
+
     "Live Transcript": "实时转写",
     "Stop Live": "停止实时",
     "Processing": "处理中",
