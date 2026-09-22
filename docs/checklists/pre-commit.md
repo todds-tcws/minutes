@@ -10,6 +10,14 @@
 
 ## Local hooks (optional)
 
+**Recording-state test isolation:** Every test that reads or writes global
+Minutes state must use `minutes_core::test_support::with_temp_home` (or the
+desktop test module's equivalent). `home_env_lock()` only serializes tests; it
+does not isolate their files. Unisolated PID tests previously wrote the live
+`recording.stop` sentinel and could interrupt a real meeting. Run broad suites
+in an isolated process home as defense in depth, including config/state
+overrides and subprocesses. Never use an active recording as a test fixture.
+
 CI enforces the version-sync and generated-skills checks. The pre-push hooks are optional local fast feedback — enable them with `scripts/setup-hooks.sh`. They can be bypassed with `git push --no-verify`, so green CI remains authoritative.
 
 | Area | When to check | How to verify |

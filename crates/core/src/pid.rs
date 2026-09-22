@@ -718,6 +718,18 @@ pub fn check_and_clear_sentinel_for(self_pid: u32) -> bool {
     match sentinel_action(&contents, self_pid, is_process_alive) {
         SentinelAction::StopUs => {
             fs::remove_file(&path).ok();
+            crate::logging::log_step(
+                "recording_stop_signal",
+                "",
+                0,
+                serde_json::json!({
+                    "consumer_pid": self_pid,
+                    "addressing": match parse_sentinel(&contents) {
+                        SentinelAddressee::Anyone => "legacy",
+                        SentinelAddressee::Pid(_) => "pid",
+                    },
+                }),
+            );
             true
         }
         SentinelAction::ClearStale => {
@@ -877,33 +889,35 @@ mod tests {
 
     #[test]
     fn processing_status_round_trip() {
-        let _guard = crate::test_support::home_env_lock();
-        set_processing_status(
-            Some("Transcribing audio"),
-            Some(CaptureMode::QuickThought),
-            None,
-            None,
-            0,
-        )
-        .unwrap();
-        let status = read_processing_status();
-        assert!(status.processing);
-        assert_eq!(status.stage.as_deref(), Some("Transcribing audio"));
-        assert_eq!(status.owner_pid, std::process::id());
-        assert_eq!(status.mode, Some(CaptureMode::QuickThought));
-        assert_eq!(status.title, None);
-        assert_eq!(status.job_id, None);
-        assert_eq!(status.job_count, 0);
-        clear_processing_status().unwrap();
+        crate::test_support::with_temp_home(|_| {
+            set_processing_status(
+                Some("Transcribing audio"),
+                Some(CaptureMode::QuickThought),
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+            let status = read_processing_status();
+            assert!(status.processing);
+            assert_eq!(status.stage.as_deref(), Some("Transcribing audio"));
+            assert_eq!(status.owner_pid, std::process::id());
+            assert_eq!(status.mode, Some(CaptureMode::QuickThought));
+            assert_eq!(status.title, None);
+            assert_eq!(status.job_id, None);
+            assert_eq!(status.job_count, 0);
+            clear_processing_status().unwrap();
+        });
     }
 
     #[test]
     fn recording_metadata_round_trip() {
-        let _guard = crate::test_support::home_env_lock();
-        write_recording_metadata(CaptureMode::QuickThought).unwrap();
-        let metadata = read_recording_metadata().unwrap();
-        assert_eq!(metadata.mode, CaptureMode::QuickThought);
-        clear_recording_metadata().unwrap();
+        crate::test_support::with_temp_home(|_| {
+            write_recording_metadata(CaptureMode::QuickThought).unwrap();
+            let metadata = read_recording_metadata().unwrap();
+            assert_eq!(metadata.mode, CaptureMode::QuickThought);
+            clear_recording_metadata().unwrap();
+        });
     }
 
     #[test]
@@ -912,53 +926,54 @@ mod tests {
         // count and summary fields off the passed-in slice instead of going
         // back to disk. Important — this is what removes 2 of the 3 directory
         // walks per UI status poll.
-        let _guard = crate::test_support::home_env_lock();
-        let job = crate::jobs::ProcessingJob {
-            id: "job-status-check".into(),
-            mode: CaptureMode::Meeting,
-            content_type: crate::markdown::ContentType::Meeting,
-            title: Some("Status check job".into()),
-            audio_path: "/tmp/status.wav".into(),
-            output_path: None,
-            state: crate::jobs::JobState::Transcribing,
-            stage: Some("Transcribing meeting".into()),
-            created_at: chrono::Local::now(),
-            started_at: Some(chrono::Local::now()),
-            finished_at: None,
-            notice_dismissed_at: None,
-            recording_started_at: None,
-            recording_finished_at: None,
-            context_session_id: None,
-            user_notes: None,
-            pre_context: None,
-            consent: None,
-            consent_notice: None,
-            calendar_event: None,
-            template_slug: None,
-            recording_health: None,
-            word_count: None,
-            error: None,
-            owner_pid: Some(4242),
-            retry_count: 0,
-        };
-        let jobs = vec![job];
-        let status = status_with_active_jobs(&jobs);
-        assert!(status.processing);
-        assert_eq!(
-            status.processing_job_id.as_deref(),
-            Some("job-status-check")
-        );
-        assert_eq!(status.processing_job_count, 1);
-        assert_eq!(status.processing_title.as_deref(), Some("Status check job"));
-        assert_eq!(
-            status.processing_stage.as_deref(),
-            Some("Transcribing meeting")
-        );
+        crate::test_support::with_temp_home(|_| {
+            let job = crate::jobs::ProcessingJob {
+                id: "job-status-check".into(),
+                mode: CaptureMode::Meeting,
+                content_type: crate::markdown::ContentType::Meeting,
+                title: Some("Status check job".into()),
+                audio_path: "/tmp/status.wav".into(),
+                output_path: None,
+                state: crate::jobs::JobState::Transcribing,
+                stage: Some("Transcribing meeting".into()),
+                created_at: chrono::Local::now(),
+                started_at: Some(chrono::Local::now()),
+                finished_at: None,
+                notice_dismissed_at: None,
+                recording_started_at: None,
+                recording_finished_at: None,
+                context_session_id: None,
+                user_notes: None,
+                pre_context: None,
+                consent: None,
+                consent_notice: None,
+                calendar_event: None,
+                template_slug: None,
+                recording_health: None,
+                word_count: None,
+                error: None,
+                owner_pid: Some(4242),
+                retry_count: 0,
+            };
+            let jobs = vec![job];
+            let status = status_with_active_jobs(&jobs);
+            assert!(status.processing);
+            assert_eq!(
+                status.processing_job_id.as_deref(),
+                Some("job-status-check")
+            );
+            assert_eq!(status.processing_job_count, 1);
+            assert_eq!(status.processing_title.as_deref(), Some("Status check job"));
+            assert_eq!(
+                status.processing_stage.as_deref(),
+                Some("Transcribing meeting")
+            );
 
-        let empty: Vec<crate::jobs::ProcessingJob> = Vec::new();
-        let empty_status = status_with_active_jobs(&empty);
-        assert_eq!(empty_status.processing_job_count, 0);
-        assert_eq!(empty_status.processing_job_id, None);
+            let empty: Vec<crate::jobs::ProcessingJob> = Vec::new();
+            let empty_status = status_with_active_jobs(&empty);
+            assert_eq!(empty_status.processing_job_count, 0);
+            assert_eq!(empty_status.processing_job_id, None);
+        });
     }
 
     #[test]
@@ -966,81 +981,167 @@ mod tests {
         // Locks in that the function trusts caller-provided ordering.
         // active_jobs() returns active < queued < terminal then created_at
         // desc; the active in-flight job must surface as the summary.
-        let _guard = crate::test_support::home_env_lock();
-        let mk = |id: &str, state: crate::jobs::JobState, title: &str| crate::jobs::ProcessingJob {
-            id: id.into(),
-            mode: CaptureMode::Meeting,
-            content_type: crate::markdown::ContentType::Meeting,
-            title: Some(title.into()),
-            audio_path: format!("/tmp/{id}.wav"),
-            output_path: None,
-            state,
-            stage: state.default_stage(),
-            created_at: chrono::Local::now(),
-            started_at: None,
-            finished_at: None,
-            notice_dismissed_at: None,
-            recording_started_at: None,
-            recording_finished_at: None,
-            context_session_id: None,
-            user_notes: None,
-            pre_context: None,
-            consent: None,
-            consent_notice: None,
-            calendar_event: None,
-            template_slug: None,
-            recording_health: None,
-            word_count: None,
-            error: None,
-            owner_pid: None,
-            retry_count: 0,
-        };
-        let active = mk("job-a", crate::jobs::JobState::Transcribing, "Active job");
-        let queued = mk("job-q", crate::jobs::JobState::Queued, "Queued job");
-        let jobs = vec![active, queued];
-        let status = status_with_active_jobs(&jobs);
-        assert_eq!(status.processing_job_id.as_deref(), Some("job-a"));
-        assert_eq!(status.processing_title.as_deref(), Some("Active job"));
-        assert_eq!(status.processing_job_count, 2);
+        crate::test_support::with_temp_home(|_| {
+            let mk =
+                |id: &str, state: crate::jobs::JobState, title: &str| crate::jobs::ProcessingJob {
+                    id: id.into(),
+                    mode: CaptureMode::Meeting,
+                    content_type: crate::markdown::ContentType::Meeting,
+                    title: Some(title.into()),
+                    audio_path: format!("/tmp/{id}.wav"),
+                    output_path: None,
+                    state,
+                    stage: state.default_stage(),
+                    created_at: chrono::Local::now(),
+                    started_at: None,
+                    finished_at: None,
+                    notice_dismissed_at: None,
+                    recording_started_at: None,
+                    recording_finished_at: None,
+                    context_session_id: None,
+                    user_notes: None,
+                    pre_context: None,
+                    consent: None,
+                    consent_notice: None,
+                    calendar_event: None,
+                    template_slug: None,
+                    recording_health: None,
+                    word_count: None,
+                    error: None,
+                    owner_pid: None,
+                    retry_count: 0,
+                };
+            let active = mk("job-a", crate::jobs::JobState::Transcribing, "Active job");
+            let queued = mk("job-q", crate::jobs::JobState::Queued, "Queued job");
+            let jobs = vec![active, queued];
+            let status = status_with_active_jobs(&jobs);
+            assert_eq!(status.processing_job_id.as_deref(), Some("job-a"));
+            assert_eq!(status.processing_title.as_deref(), Some("Active job"));
+            assert_eq!(status.processing_job_count, 2);
+        });
     }
 
     #[test]
     fn sentinel_lifecycle() {
-        let _guard = crate::test_support::home_env_lock();
-        // Ensure clean state
-        let _ = std::fs::remove_file(stop_sentinel_path());
-        assert!(!stop_sentinel_path().exists());
+        crate::test_support::with_temp_home(|_| {
+            // Ensure clean state
+            let _ = std::fs::remove_file(stop_sentinel_path());
+            assert!(!stop_sentinel_path().exists());
 
-        // Write sentinel
-        write_stop_sentinel().unwrap();
-        assert!(stop_sentinel_path().exists());
+            // Write sentinel
+            write_stop_sentinel().unwrap();
+            assert!(stop_sentinel_path().exists());
 
-        // Check and clear returns true, removes file
-        assert!(check_and_clear_sentinel());
-        assert!(!stop_sentinel_path().exists());
+            // Check and clear returns true, removes file
+            assert!(check_and_clear_sentinel());
+            assert!(!stop_sentinel_path().exists());
 
-        // Second check returns false
-        assert!(!check_and_clear_sentinel());
+            // Second check returns false
+            assert!(!check_and_clear_sentinel());
+        });
     }
 
     #[test]
     fn sentinel_write_and_clear() {
-        let _guard = crate::test_support::home_env_lock();
-        // Write a sentinel and verify check_and_clear removes it
-        write_stop_sentinel().unwrap();
-        assert!(stop_sentinel_path().exists());
-        assert!(check_and_clear_sentinel());
-        assert!(!stop_sentinel_path().exists());
-        // Second call returns false — already cleared
-        assert!(!check_and_clear_sentinel());
+        crate::test_support::with_temp_home(|_| {
+            // Write a sentinel and verify check_and_clear removes it
+            write_stop_sentinel().unwrap();
+            assert!(stop_sentinel_path().exists());
+            assert!(check_and_clear_sentinel());
+            assert!(!stop_sentinel_path().exists());
+            // Second call returns false — already cleared
+            assert!(!check_and_clear_sentinel());
+        });
+    }
+
+    #[test]
+    fn consumed_stop_sentinel_logs_addressing_without_payload() {
+        crate::test_support::with_temp_home(|_| {
+            let pid = std::process::id();
+            write_stop_sentinel_for(pid).unwrap();
+            assert!(check_and_clear_sentinel());
+            // Legacy payloads must not be copied verbatim to the log.
+            write_sentinel_bytes("legacy-private-payload").unwrap();
+            assert!(check_and_clear_sentinel());
+            let log = std::fs::read_to_string(crate::logging::log_path()).unwrap();
+            let entries: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .filter(|entry: &serde_json::Value| entry["step"] == "recording_stop_signal")
+                .collect();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0]["extra"]["consumer_pid"], pid);
+            assert_eq!(entries[0]["extra"]["addressing"], "pid");
+            assert_eq!(entries[1]["extra"]["addressing"], "legacy");
+            assert!(!log.contains("legacy-private-payload"));
+        });
     }
 
     #[test]
     fn check_and_clear_sentinel_returns_false_when_absent() {
-        let _guard = crate::test_support::home_env_lock();
-        // Ensure no sentinel exists
-        let _ = std::fs::remove_file(stop_sentinel_path());
-        assert!(!check_and_clear_sentinel());
+        crate::test_support::with_temp_home(|_| {
+            // Ensure no sentinel exists
+            let _ = std::fs::remove_file(stop_sentinel_path());
+            assert!(!check_and_clear_sentinel());
+        });
+    }
+
+    #[test]
+    fn isolated_lifecycle_preserves_another_home_recording_state() {
+        crate::test_support::with_temp_home(|live_home| {
+            write_stop_sentinel_for(std::process::id()).unwrap();
+            write_recording_metadata(CaptureMode::Meeting).unwrap();
+            set_processing_status(
+                Some("Transcribing meeting"),
+                Some(CaptureMode::Meeting),
+                Some("Existing meeting"),
+                Some("existing-job"),
+                1,
+            )
+            .unwrap();
+            let existing_files = [
+                stop_sentinel_path(),
+                recording_meta_path(),
+                processing_status_path(),
+            ]
+            .map(|path| {
+                let contents = std::fs::read(&path).unwrap();
+                (path, contents)
+            });
+
+            let isolated_home = tempfile::tempdir().unwrap();
+            {
+                // The outer helper holds the HOME lock; only override the
+                // directory here so the same mutex is not acquired twice.
+                let _home = crate::test_support::HomeOverride::set(isolated_home.path());
+                assert!(stop_sentinel_path().starts_with(isolated_home.path()));
+                assert!(!check_and_clear_sentinel());
+                write_stop_sentinel().unwrap();
+                assert!(check_and_clear_sentinel());
+
+                write_recording_metadata(CaptureMode::QuickThought).unwrap();
+                assert_eq!(
+                    read_recording_metadata().unwrap().mode,
+                    CaptureMode::QuickThought
+                );
+                clear_recording_metadata().unwrap();
+                set_processing_status(None, None, None, None, 0).unwrap();
+                clear_processing_status().unwrap();
+
+                for (path, contents) in &existing_files {
+                    assert_eq!(&std::fs::read(path).unwrap(), contents);
+                }
+            }
+
+            assert!(stop_sentinel_path().starts_with(live_home));
+            assert_eq!(
+                read_recording_metadata().unwrap().mode,
+                CaptureMode::Meeting
+            );
+            for (path, contents) in existing_files {
+                assert_eq!(std::fs::read(path).unwrap(), contents);
+            }
+        });
     }
 
     #[test]

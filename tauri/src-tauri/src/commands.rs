@@ -3720,15 +3720,32 @@ fn start_native_call_recording(
         }
     });
 
+    let mut stop_reason = "stop_flag";
     while !stop_flag.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(mut health) = call_capture_health.lock() {
             *health = Some(session.source_health());
         }
         if minutes_core::pid::check_and_clear_sentinel() {
+            stop_reason = "stop_sentinel";
             break;
         }
-        if let Some(status) = session.try_wait()? {
+        let helper_status = session.try_wait().inspect_err(|_| {
+            minutes_core::logging::log_step(
+                "desktop_recording_stop",
+                "",
+                0,
+                serde_json::json!({"reason": "helper_wait_error", "pid": std::process::id()}),
+            );
+        })?;
+        if let Some(status) = helper_status {
+            minutes_core::logging::log_step(
+                "desktop_recording_stop",
+                "",
+                0,
+                serde_json::json!({"reason": "helper_exit", "pid": std::process::id(),
+                                   "success": status.success(), "exit_code": status.code()}),
+            );
             if !status.success() {
                 let recording_finished_at = chrono::Local::now();
                 let user_notes = minutes_core::notes::read_notes();
@@ -3829,10 +3846,19 @@ fn start_native_call_recording(
                 reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
                 return Ok(());
             }
+            stop_reason = "helper_exit";
             break;
         }
     }
 
+    if stop_reason != "helper_exit" {
+        minutes_core::logging::log_step(
+            "desktop_recording_stop",
+            "",
+            0,
+            serde_json::json!({"reason": stop_reason, "pid": std::process::id()}),
+        );
+    }
     if let Err(error) = session.stop() {
         let recording_finished_at = chrono::Local::now();
         let user_notes = minutes_core::notes::read_notes();
@@ -17969,16 +17995,19 @@ mod tests {
 
     #[test]
     fn rejected_recording_launch_sets_visible_error_notice() {
-        let state = test_app_state();
+        with_temp_home(|_| {
+            let state = test_app_state();
 
-        let error = reject_recording_launch(&state, "Dictation in progress — stop it first".into());
+            let error =
+                reject_recording_launch(&state, "Dictation in progress — stop it first".into());
 
-        assert_eq!(error, "Dictation in progress — stop it first");
-        let notice = state.latest_output.lock().unwrap().clone().unwrap();
-        assert_eq!(notice.kind, "error");
-        assert_eq!(notice.title, "Recording not started");
-        assert_eq!(notice.path, "");
-        assert_eq!(notice.detail, "Dictation in progress — stop it first");
+            assert_eq!(error, "Dictation in progress — stop it first");
+            let notice = state.latest_output.lock().unwrap().clone().unwrap();
+            assert_eq!(notice.kind, "error");
+            assert_eq!(notice.title, "Recording not started");
+            assert_eq!(notice.path, "");
+            assert_eq!(notice.detail, "Dictation in progress — stop it first");
+        });
     }
 
     #[test]
