@@ -35,6 +35,18 @@ window.__MINUTES_I18N['pt-BR'] = {
     "Recording stopped · processing…": "Gravação parada · processando…",
     "Live view unavailable": "Visualização ao vivo indisponível",
 
+    // ── Meeting-detected card + settings (REQ-2) ─────────────────────
+    // "Not now" already has a catalog entry below (Coach setup dismiss).
+    "In a meeting?": "Em uma reunião?",
+    "Snooze": "Adiar",
+    "Not for this call": "Não nesta chamada",
+    "1 hour": "1 hora",
+    "Never for {app}": "Nunca para {app}",
+    "Couldn't start recording": "Não foi possível iniciar a gravação",
+    "Ask with a floating prompt": "Perguntar com um cartão flutuante",
+    "Ignored apps": "Aplicativos ignorados",
+    "Remove": "Remover",
+
     "Live Transcript": "Transcrição ao vivo",
     "Stop Live": "Parar ao vivo",
     "Processing": "Processando",

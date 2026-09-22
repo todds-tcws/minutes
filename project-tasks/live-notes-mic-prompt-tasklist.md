@@ -62,7 +62,7 @@
 **Reference**: spec AC-2.3, AC-2.5, AC-2.7, AC-2.8, AC-2.9, AC-2.11.
 **Definition of done**: code-reviewer pass. accessibility-specialist review required — record the section 2/6 mouse-only waiver explicitly against this task rather than skipping the audit (keyboard/VoiceOver card operation is an accepted non-goal this round).
 
-### [ ] Task 6: REQ-2 index.html — remove banner, Settings toggle + ignored-apps list, i18n
+### [x] Task 6: REQ-2 index.html — remove banner, Settings toggle + ignored-apps list, i18n
 **Description**: Remove `#call-detected-banner` markup, its `call:detected` listener, and the `cmd_show_main_window` call from that listener in `index.html`; `#call-ended-banner` and its listeners are unchanged. Settings > Call detection: toggle "Ask with a floating prompt" bound to `call_detection.prompt_card` (Task 3's config), invoking `cmd_close_meeting_detected` immediately when turned off while a card is open; "Ignored apps" list with one row per `call_detection.ignored_apps` entry and a remove control that saves the config without that app (that app then prompts again on its next non-reminder detection via Task 3/4's `decide` fall-through). Add i18n keys for the card strings ("In a meeting?", "Record", "Not now", "Snooze", "Not for this call", "1 hour", "Never for {app}") and settings strings ("Ask with a floating prompt", "Ignored apps", "Remove") through `window.MinutesI18n.t`, in both `zh-CN.js` and `pt-BR.js`.
 **Requirements**: REQ-2
 **Acceptance criteria**: AC-2.11, AC-2.13, AC-2.14, AC-2.15

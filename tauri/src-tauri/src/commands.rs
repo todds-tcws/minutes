@@ -12977,6 +12977,8 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "stop_when_call_ends": config.call_detection.stop_when_call_ends,
             "call_end_stop_countdown_secs": config.call_detection.call_end_stop_countdown_secs,
             "any_mic_app": config.call_detection.any_mic_app,
+            "prompt_card": config.call_detection.prompt_card,
+            "ignored_apps": config.call_detection.ignored_apps,
         },
         "dictation": {
             "backend": config.dictation.backend,
@@ -13378,6 +13380,12 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
         ("call_detection", "any_mic_app") => {
             config.call_detection.any_mic_app = value == "true";
+        }
+        ("call_detection", "prompt_card") => {
+            config.call_detection.prompt_card = value == "true";
+        }
+        ("call_detection", "ignored_apps") => {
+            config.call_detection.ignored_apps = parse_comma_separated_setting(&value);
         }
         ("ui", "recording_hud_enabled") => {
             config.ui.recording_hud_enabled = value == "true";

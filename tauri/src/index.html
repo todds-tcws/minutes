@@ -4598,61 +4598,6 @@
       flex-wrap: wrap;
     }
 
-    /* ── Call detected banner ──
-       Single-row notification (matches macOS-native call notification pattern):
-       icon + title + Record CTA + corner ✕. Previously had a subtitle, an
-       instructional paragraph, and two readiness chips that never updated past
-       "waiting" — all dropped because they bloated the card to 6+ lines and
-       carried no actionable info. */
-    .call-detected {
-      display: none;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 12px 10px 16px;
-      background: var(--green-tint-soft);
-      border-bottom: 1px solid var(--green-border);
-    }
-
-    .call-detected.active {
-      display: flex;
-    }
-
-    .call-detected-icon {
-      font-size: var(--text-base);
-      flex-shrink: 0;
-    }
-
-    .call-detected-title {
-      font-size: var(--text-body);
-      font-weight: 600;
-      color: var(--text);
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .call-detected-close {
-      flex-shrink: 0;
-      width: 22px;
-      height: 22px;
-      border: none;
-      background: transparent;
-      color: var(--text-secondary);
-      font-size: var(--text-base);
-      line-height: 1;
-      cursor: pointer;
-      border-radius: 4px;
-      padding: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .call-detected-close:hover {
-      background: var(--surface-fill-hover);
-      color: var(--text);
-    }
 
     /* ── Call ended countdown banner ── */
     .call-ended {
@@ -5314,13 +5259,6 @@
       color: var(--green);
       border-color: var(--green-border);
       background: var(--green-tint-soft);
-    }
-
-    .call-detected-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
     }
 
     .ui-hidden {
@@ -6037,16 +5975,6 @@
         <div class="upcoming-time" id="upcoming-time"></div>
       </div>
       <button class="btn btn-primary btn-sm" id="btn-record-upcoming">Record</button>
-    </div>
-
-    <!-- Call detected banner -->
-    <div class="call-detected" id="call-detected-banner">
-      <div class="call-detected-icon">📞</div>
-      <div class="call-detected-title" id="call-detected-title">Call detected</div>
-      <div class="call-detected-actions">
-        <button class="btn btn-primary btn-sm" id="btn-record-call">Record</button>
-        <button class="call-detected-close" id="btn-dismiss-call" aria-label="Dismiss call notification" title="Dismiss">×</button>
-      </div>
     </div>
 
     <!-- Call ended countdown banner -->
@@ -7170,7 +7098,7 @@
           <div class="about-controls-group">
             <div class="about-controls-copy">Stop when call ends</div>
             <div class="about-controls-meta">When the detected call app exits mid-recording, show a countdown prompt
-              with Stop now and Keep recording. Only applies to recordings started from the call-detection banner.</div>
+              with Stop now and Keep recording. Only applies to recordings started from the call-detection card.</div>
           </div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection-stop-when-call-ends">Off</button>
         </div>
@@ -7179,6 +7107,22 @@
             <div class="about-controls-copy">Auto-stop countdown</div>
             <div class="about-controls-meta">Seconds to wait before stopping when the call ends.</div>
             <input type="number" id="settings-call-detection-countdown-secs" min="1" class="settings-field">
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Ask with a floating prompt</div>
+            <div class="about-controls-meta">Show the "In a meeting?" card (Record / Not now / snooze) at detection
+              instead of a system notification.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection-prompt-card">On</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Ignored apps</div>
+            <div class="about-controls-meta" id="settings-ignored-apps-empty">No ignored apps yet. Use "Never for
+              &lt;app&gt;" on the prompt card to add one.</div>
+            <div id="settings-ignored-apps-list"></div>
           </div>
         </div>
       </div>
@@ -8623,16 +8567,11 @@
           recordingBar.classList.remove('active');
           processingBar.classList.add('active');
           processingBar.classList.remove('has-jobs');
-          processingTitle.textContent = activeCallSession && !activeCallSession.dismissed
-            ? 'Starting call recording'
-            : currentProcessingTitle(mode).replace('Processing', 'Starting');
-          processingStage.textContent = activeCallSession && !activeCallSession.dismissed
-            ? 'Connecting to microphone and system audio...'
-            : 'Checking microphone and recording state...';
+          processingTitle.textContent = currentProcessingTitle(mode).replace('Processing', 'Starting');
+          processingStage.textContent = 'Checking microphone and recording state...';
           processingElapsed.textContent = '';
           liveBar.classList.remove('active');
           isLiveTranscript = false;
-          callBanner.classList.remove('active');
           setFooterCaptureMode(true, 'starting');
           if (!wasStarting && !wasRecording && !wasProcessing) {
             startFastPoll();
@@ -8666,8 +8605,6 @@
           processingBar.classList.toggle('active', isProcessing);
           liveBar.classList.remove('active'); // T4: clear live bar if recording starts externally
           isLiveTranscript = false;
-          callBanner.classList.remove('active');
-          if (activeCallSession) activeCallSession.dismissed = true;
           setFooterCaptureMode(true, 'recording');
           if (status.elapsed) recordingTime.textContent = status.elapsed;
           updateViz(status.audioLevel || 0);
@@ -8699,10 +8636,6 @@
           processingBar.classList.add('active');
           liveBar.classList.remove('active'); // T4
           isLiveTranscript = false;
-          // A background job does not preclude a new call recording, so keep
-          // the call banner visible while processing; only starting/recording
-          // hide it. Hiding it here made back-to-back calls invisible (#885).
-          callBanner.classList.toggle('active', !!(activeCallSession && !activeCallSession.dismissed));
           setFooterCaptureMode(false);
           processingStage.textContent =
             status.processingStageLabel
@@ -8740,7 +8673,6 @@
           recordingSourceHealth.classList.remove('active');
           processingBar.classList.remove('active');
           liveBar.classList.remove('active');
-          callBanner.classList.remove('active');
           setFooterCaptureMode(true, 'recording');
           recordingTime.textContent = status.sensitive.elapsed || '';
           updateViz(0);
@@ -8799,10 +8731,6 @@
             clearChildren(processingJobsEl);
             quickNote.classList.remove('active');
             setFooterCaptureMode(false);
-
-            if (activeCallSession && !activeCallSession.dismissed) {
-              callBanner.classList.add('active');
-            }
 
             // Clear processing elapsed timer
             if (processingTimerInterval) { clearInterval(processingTimerInterval); processingTimerInterval = null; }
@@ -10017,13 +9945,6 @@
     });
 
     // ── Recording controls ──
-    function recordingStartArgsForCurrentUi() {
-      if (activeCallSession && !activeCallSession.dismissed && callBanner.classList.contains('active')) {
-        return { intent: 'call', source: 'call_detect' };
-      }
-      return undefined;
-    }
-
     let pendingRecordingStartArgs = null;
 
     function closeRecordingConsentModal() {
@@ -10050,7 +9971,7 @@
     }
 
     function startDesktopRecordingFromUi() {
-      return startDesktopRecordingWithArgs(recordingStartArgsForCurrentUi());
+      return startDesktopRecordingWithArgs();
     }
 
     // Palette / tray / hotkey / desktop-control starts under Require mode
@@ -12912,6 +12833,8 @@
           setSettingsToggle('settings-call-detection-stop-when-call-ends', Boolean(s.call_detection.stop_when_call_ends));
           setSettingsToggle('settings-call-detection-any-mic-app', s.call_detection.any_mic_app !== false);
           document.getElementById('settings-call-detection-countdown-secs').value = String(s.call_detection.call_end_stop_countdown_secs ?? 30);
+          setSettingsToggle('settings-call-detection-prompt-card', s.call_detection.prompt_card !== false);
+          renderIgnoredApps(s.call_detection.ignored_apps || []);
         }
         if (s.ui) {
           setSettingsToggle('settings-recording-hud', s.ui.recording_hud_enabled !== false);
@@ -13968,6 +13891,44 @@
         e.target.value = String(s.call_detection.call_end_stop_countdown_secs ?? 30);
       }
     });
+    // AC-2.14: prompt_card toggle. AC-2.11 (settings half): turning it off
+    // closes an open card immediately — cmd_close_meeting_detected is a no-op
+    // if no card is open, so it's safe to call unconditionally here.
+    document.getElementById('settings-call-detection-prompt-card').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !(s.call_detection.prompt_card !== false);
+      try {
+        await invoke('cmd_set_setting', { section: 'call_detection', key: 'prompt_card', value: String(next) });
+        setSettingsToggle('settings-call-detection-prompt-card', next);
+        if (!next) await invoke('cmd_close_meeting_detected').catch(() => {});
+      } catch (e) { console.error('prompt_card toggle:', e); }
+    });
+    // AC-2.14: one row per ignored app, remove control saves the config
+    // without that app (it then prompts again on its next detection).
+    function renderIgnoredApps(apps) {
+      const list = document.getElementById('settings-ignored-apps-list');
+      const empty = document.getElementById('settings-ignored-apps-empty');
+      clearChildren(list);
+      setHidden(empty, apps.length > 0);
+      for (const app of apps) {
+        list.appendChild(el('div', { class: 'about-controls' }, [
+          el('div', { class: 'about-controls-copy', text: app }),
+          el('button', {
+            class: 'btn btn-secondary btn-sm',
+            text: 'Remove',
+            on: { click: () => removeIgnoredApp(app) },
+          }),
+        ]));
+      }
+    }
+    async function removeIgnoredApp(app) {
+      try {
+        const s = await invoke('cmd_get_settings');
+        const next = (s.call_detection.ignored_apps || []).filter((a) => a !== app);
+        await invoke('cmd_set_setting', { section: 'call_detection', key: 'ignored_apps', value: next.join(', ') });
+        renderIgnoredApps(next);
+      } catch (e) { console.error('remove ignored app:', e); }
+    }
 
     // Dictation settings handlers — guarded for removed HTML elements
     if (document.getElementById('settings-dictation-shortcut')) document.getElementById('settings-dictation-shortcut').addEventListener('click', async () => {
@@ -16106,54 +16067,12 @@
       else if (mode === 'debrief') setRecallPhase('debrief', context);
     }
 
-    // ── Call detection banner ──
-    const callBanner = document.getElementById('call-detected-banner');
-    const callTitle = document.getElementById('call-detected-title');
-    let activeCallSession = null;
-
-    // Used by the recording-bar health chips (line ~5806). The call-detected
-    // banner used to call this too with stale "waiting" placeholders, but
-    // those were dropped in the single-row redesign.
+    // Used by the recording-bar health chips (line ~5806).
     function setCallHealthChip(node, text, live) {
       if (!node) return;
       node.textContent = text;
       node.classList.toggle('live', !!live);
     }
-
-    currentWindow.listen('call:detected', (event) => {
-      const { app_name, is_reminder } = event.payload;
-      activeCallSession = {
-        app_name,
-        dismissed: false,
-      };
-      callTitle.textContent = `${app_name} call detected`;
-      callBanner.classList.add('active');
-
-      // Only steal focus on first detection, not periodic reminders
-      if (!is_reminder) {
-        invoke('cmd_show_main_window').catch(() => {});
-      }
-    });
-
-    document.getElementById('btn-record-call').addEventListener('click', async () => {
-      try {
-        setFooterCaptureMode(true, 'starting');
-        startFastPoll();
-        // Mark the session as call-detection-initiated so stop_when_call_ends
-        // knows this recording is eligible for the auto-stop prompt when the
-        // call app exits. Manual `minutes record` / hotkey starts never set this.
-        await startDesktopRecordingWithArgs({ intent: 'call', source: 'call_detect' });
-      } catch (e) {
-        console.error('Call recording:', e);
-        showRecordingStartError(e);
-        setFooterCaptureMode(false);
-      }
-    });
-
-    document.getElementById('btn-dismiss-call').addEventListener('click', () => {
-      if (activeCallSession) activeCallSession.dismissed = true;
-      callBanner.classList.remove('active');
-    });
 
     // ── Call-end auto-stop countdown ──
     // Backend emits `call:ended` with { app_name, countdown_secs } when the
@@ -16202,8 +16121,6 @@
       if (callEndCountdownInterval) clearInterval(callEndCountdownInterval);
       callEndCountdownInterval = setInterval(tickCallEndCountdown, 250);
       tickCallEndCountdown();
-      // Hide the "call detected" banner — we're past that now.
-      callBanner.classList.remove('active');
       callEndedBanner.classList.add('active');
     });
 

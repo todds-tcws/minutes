@@ -39,6 +39,37 @@ export function liveViewPage({ lines = [], totalLines, notes = [], totalNotes } 
   };
 }
 
+/**
+ * Minimum cmd_get_settings shape that loadSettings() (index.html) can walk
+ * without throwing — several sections are read unconditionally (no `?.`/`||`
+ * guard around the parent object): transcription, diarization, summarization,
+ * screen_context, assistant. Everything else in loadSettings is optional-
+ * chained or `if`-guarded, so it's fine to omit here.
+ */
+export function settingsFixture(overrides = {}) {
+  return {
+    config_path: '/tmp/minutes-test-config.toml',
+    transcription: { engine: 'whisper', model: 'base' },
+    diarization: { engine: 'auto' },
+    summarization: { engine: 'claude' },
+    screen_context: { enabled: false, interval_secs: 30 },
+    assistant: { agent: 'claude', agent_args: [] },
+    call_detection: {
+      enabled: true,
+      poll_interval_secs: 1,
+      cooldown_minutes: 5,
+      google_meet_enabled: false,
+      teams_web_enabled: false,
+      stop_when_call_ends: false,
+      any_mic_app: true,
+      call_end_stop_countdown_secs: 30,
+      prompt_card: true,
+      ignored_apps: [],
+    },
+    ...overrides,
+  };
+}
+
 export function captureStatus({ recording = false, processing = false, paused = false, diagnostic = '' } = {}) {
   return {
     recording,
@@ -46,6 +77,19 @@ export function captureStatus({ recording = false, processing = false, paused = 
     paused,
     liveTranscript: { diagnostic },
   };
+}
+
+/**
+ * Opens index.html, seeds cmd_get_settings, opens the Settings overlay and
+ * switches to the "AI & Privacy" tab, which holds the Call Detection section
+ * (id="tab-ai" / "panel-ai" — Call Detection is not on its own tab).
+ */
+export async function openCallDetectionSettings(page, { setDefault, settings }) {
+  await openIndex(page, { useClock: false });
+  await setDefault(page, 'cmd_get_settings', settings);
+  await page.locator('#btn-settings').click();
+  await page.locator('#tab-ai').click();
+  await page.waitForSelector('#settings-call-detection-prompt-card', { state: 'visible' });
 }
 
 export const MEETING_DETECTED_HTML_PATH = path.resolve(__dirname, '../../src/meeting-detected.html');

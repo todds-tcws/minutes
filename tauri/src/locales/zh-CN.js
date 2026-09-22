@@ -35,6 +35,18 @@ window.__MINUTES_I18N['zh-CN'] = {
     "Recording stopped · processing…": "录音已停止 · 处理中…",
     "Live view unavailable": "实时视图不可用",
 
+    // ── Meeting-detected card + settings (REQ-2) ─────────────────────
+    "In a meeting?": "正在开会吗？",
+    "Not now": "暂不",
+    "Snooze": "稍后提醒",
+    "Not for this call": "本次通话不再提示",
+    "1 hour": "1 小时",
+    "Never for {app}": "始终不为 {app} 提示",
+    "Couldn't start recording": "无法开始录音",
+    "Ask with a floating prompt": "用浮动提示询问",
+    "Ignored apps": "已忽略的应用",
+    "Remove": "移除",
+
     "Live Transcript": "实时转写",
     "Stop Live": "停止实时",
     "Processing": "处理中",
