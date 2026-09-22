@@ -1074,6 +1074,32 @@ mod tests {
         );
     }
 
+    /// Live check against a real published feed. Set `MINUTES_ICS_TEST_URL`
+    /// and run with `--ignored`; the URL is a secret and never lives in the
+    /// repo.
+    #[test]
+    #[ignore = "needs MINUTES_ICS_TEST_URL pointing at a live feed"]
+    fn live_feed_smoke() {
+        let url = std::env::var("MINUTES_ICS_TEST_URL").expect("MINUTES_ICS_TEST_URL");
+        let text = fetch(&url).expect("fetch feed");
+        let now = Utc::now();
+        let instances = expand_feed(&text, now);
+        assert!(!instances.is_empty(), "feed expanded to zero instances");
+        for i in instances.iter().take(12) {
+            eprintln!(
+                "{}  {}  [{} attendees] {}",
+                i.start.with_timezone(&Local).format("%a %m-%d %H:%M"),
+                i.title,
+                i.attendees.len(),
+                i.url
+                    .as_deref()
+                    .map(|u| &u[..u.len().min(40)])
+                    .unwrap_or("-")
+            );
+        }
+        eprintln!("total instances: {}", instances.len());
+    }
+
     #[test]
     fn upcoming_and_overlap_windows_from_instances() {
         let now = Utc::now();
