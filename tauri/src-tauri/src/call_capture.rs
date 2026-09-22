@@ -125,6 +125,29 @@ pub struct StemPaths {
     pub system: PathBuf,
 }
 
+/// PID of the running native call helper, 0 when none. Lets the pause
+/// commands signal the helper without threading the session through
+/// `AppState`; the session sets it on spawn and clears it on stop.
+pub static NATIVE_CALL_HELPER_PID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// Tell a running native call helper to pause (SIGUSR1) or resume (SIGUSR2)
+/// writing its stems. No-op when no helper is running.
+pub fn signal_native_call_helper_pause(paused: bool) {
+    let pid = NATIVE_CALL_HELPER_PID.load(std::sync::atomic::Ordering::Relaxed);
+    if pid == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let signal = if paused { libc::SIGUSR1 } else { libc::SIGUSR2 };
+        let rc = unsafe { libc::kill(pid as i32, signal) };
+        if rc != 0 {
+            eprintln!("[call-capture] could not signal helper {pid} pause={paused}");
+        }
+    }
+}
+
 pub struct NativeCallCaptureSession {
     child: Child,
     output_path: PathBuf,
@@ -318,6 +341,7 @@ impl NativeCallCaptureSession {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
+        NATIVE_CALL_HELPER_PID.store(0, std::sync::atomic::Ordering::Relaxed);
         #[cfg(not(target_os = "macos"))]
         {
             return Err("native call capture is unsupported on this platform".into());
@@ -491,6 +515,7 @@ pub fn start_native_call_capture(
         .spawn()
         .map_err(|error| format!("failed to start native call helper: {}", error))?;
 
+    NATIVE_CALL_HELPER_PID.store(child.id(), std::sync::atomic::Ordering::Relaxed);
     let stdout = child
         .stdout
         .take()

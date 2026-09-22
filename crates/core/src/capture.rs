@@ -17,6 +17,42 @@ static AUDIO_LEVEL: AtomicU32 = AtomicU32::new(0);
 /// Count of audio chunks dropped by the live sidecar channel (buffer full).
 static SIDECAR_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Recording pause. While set, captured samples are dropped instead of
+/// written (the file simply gets shorter, like Notion), and the live sidecar
+/// receives nothing. The durable state is the pause ledger in
+/// `crate::notes`; this flag is the in-process mirror the audio callback
+/// reads, refreshed once per record-loop tick so a toggle from another
+/// Minutes process (CLI, desktop) reaches a recording it does not own.
+static RECORDING_PAUSED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_recording_paused() -> bool {
+    RECORDING_PAUSED.load(Ordering::Relaxed)
+}
+
+/// Sync the in-process flag from the on-disk ledger.
+pub fn refresh_recording_pause_from_ledger() {
+    RECORDING_PAUSED.store(
+        crate::notes::read_pause_ledger().is_paused(),
+        Ordering::Relaxed,
+    );
+}
+
+/// Pause or resume the active recording. Returns `Ok(true)` when the state
+/// changed. Writes the ledger first so every process agrees, then flips the
+/// local flag so the very next audio callback honors it.
+pub fn set_recording_paused(paused: bool) -> Result<bool, String> {
+    let changed = crate::notes::set_recording_paused(paused)?;
+    RECORDING_PAUSED.store(paused, Ordering::Relaxed);
+    if changed {
+        tracing::info!(paused, "recording pause state changed");
+    }
+    Ok(changed)
+}
+
+fn clear_recording_pause_for_new_recording() {
+    RECORDING_PAUSED.store(false, Ordering::Relaxed);
+}
+
 /// Get the current audio input level (0–100).
 pub fn audio_level() -> u32 {
     AUDIO_LEVEL.load(Ordering::Relaxed)
@@ -891,6 +927,10 @@ fn build_capture_stream(
         stop_flag,
         err_flag,
         move |resampled: &[f32]| {
+            if RECORDING_PAUSED.load(Ordering::Relaxed) {
+                AUDIO_LEVEL.store(0, Ordering::Relaxed);
+                return;
+            }
             // Update audio level meter from resampled mono f32 samples
             for &sample in resampled {
                 level_accum += (sample as f64) * (sample as f64);
@@ -1319,6 +1359,15 @@ fn flush_dual_source_slots(
 
     let mut slot = current_slot;
     while slot <= max_slot {
+        if RECORDING_PAUSED.load(Ordering::Relaxed) {
+            // Paused: consume the slot without writing so the stems and the
+            // live sidecar skip this stretch entirely.
+            pending_voice.remove(&slot);
+            pending_system.remove(&slot);
+            AUDIO_LEVEL.store(0, Ordering::Relaxed);
+            slot += 1;
+            continue;
+        }
         let has_voice = pending_voice.contains_key(&slot);
         let has_system = pending_system.contains_key(&slot);
         // Counts both sources and how long each has been absent. A slot with
@@ -1444,6 +1493,12 @@ fn record_to_wav_dual_source(
         // Sync mute state from sentinel so CLI/Tauri toggles made in
         // another process are picked up by this recording loop.
         crate::streaming::refresh_mic_mute_from_sentinel();
+        refresh_recording_pause_from_ledger();
+        if is_recording_paused() {
+            // A paused recording is silent by design; keep the silence
+            // nudges and auto-stop from firing on it.
+            safety_guard.extend();
+        }
 
         let call_app_active = detect_active_call_app(config).is_some();
         match safety_guard.check(audio_level(), call_app_active) {
@@ -1631,6 +1686,7 @@ fn record_to_wav_dual_source(
 
     // Clear mute state so the next recording starts fresh.
     crate::streaming::clear_mic_mute_for_new_recording();
+    clear_recording_pause_for_new_recording();
 
     let sidecar_drops = SIDECAR_DROPS.swap(0, Ordering::Relaxed);
     if sidecar_drops > 0 {
@@ -1817,6 +1873,7 @@ pub fn record_to_wav_with_lifecycle(
     // mute sentinel so it doesn't leak into the next dual-source session.
     #[cfg(feature = "streaming")]
     crate::streaming::clear_mic_mute_for_new_recording();
+    clear_recording_pause_for_new_recording();
 
     let host = cached_default_host();
     let device_override = match &capture_plan {
@@ -1914,6 +1971,13 @@ pub fn record_to_wav_with_lifecycle(
         // Check for extend sentinel from CLI `minutes extend`
         if check_and_clear_extend_sentinel() {
             tracing::info!("extend sentinel detected — resetting safety timers");
+            safety_guard.extend();
+        }
+
+        refresh_recording_pause_from_ledger();
+        if is_recording_paused() {
+            // A paused recording is silent by design; keep the silence
+            // nudges and auto-stop from firing on it.
             safety_guard.extend();
         }
 

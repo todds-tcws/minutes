@@ -4,6 +4,7 @@ import CoreMedia
 import Dispatch
 import Foundation
 import ScreenCaptureKit
+import os
 
 private func availableMicrophones() -> [AVCaptureDevice] {
     AVCaptureDevice.DiscoverySession(
@@ -563,6 +564,16 @@ final class NativeCallRecorder: NSObject, SCRecordingOutputDelegate, SCStreamOut
     private var selectedMicrophoneDeviceSampleRate: Double?
     private var microphoneSelectionEvent: [String: Any]?
     private let sampleQueue = DispatchQueue(label: "minutes.system-audio.samples")
+    // Pause drops stem samples instead of writing them, so the stems (which
+    // the pipeline transcribes) get shorter while the framework-owned .mov
+    // keeps running. Toggled from the SIGUSR1/SIGUSR2 handlers on main,
+    // read on sampleQueue, hence the lock.
+    private let pauseState = OSAllocatedUnfairLock(initialState: false)
+
+    func setPaused(_ paused: Bool) {
+        pauseState.withLock { $0 = paused }
+        emitJSON(["event": paused ? "paused" : "resumed"])
+    }
     private var monitorTimer: DispatchSourceTimer?
     private var lastSystemAudioSampleAt: Date?
     private var lastMicSampleAt: Date?
@@ -867,6 +878,7 @@ final class NativeCallRecorder: NSObject, SCRecordingOutputDelegate, SCStreamOut
         // between the close and stopCapture() returning; honoring them
         // destroys the whole recording.
         if stemsClosed { return }
+        if pauseState.withLock({ $0 }) { return }
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
             return
@@ -1221,6 +1233,7 @@ struct NativeCallRecordMain {
     // Keep the signal source alive after `run()` returns so the SIGTERM handler
     // remains installed for the lifetime of the helper.
     nonisolated(unsafe) static var retainedStopSource: DispatchSourceSignal?
+    nonisolated(unsafe) static var retainedPauseSources: [DispatchSourceSignal] = []
 
     static func main() {
         Task {
@@ -1281,6 +1294,17 @@ struct NativeCallRecordMain {
         }
         stopSource.resume()
         NativeCallRecordMain.retainedStopSource = stopSource
+
+        // SIGUSR1 pauses stem writes, SIGUSR2 resumes them (see setPaused).
+        signal(SIGUSR1, SIG_IGN)
+        signal(SIGUSR2, SIG_IGN)
+        let pauseSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        pauseSource.setEventHandler { recorder.setPaused(true) }
+        pauseSource.resume()
+        let resumeSource = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        resumeSource.setEventHandler { recorder.setPaused(false) }
+        resumeSource.resume()
+        NativeCallRecordMain.retainedPauseSources = [pauseSource, resumeSource]
 
         do {
             try await recorder.start()

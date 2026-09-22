@@ -52,12 +52,95 @@ struct ConsentSidecar {
     notice: Option<String>,
 }
 
+/// Pause ledger for the active recording: how long it has been paused so
+/// far, and when the current pause began. Pausing drops audio, so every
+/// elapsed-time reader (note stamps, the desktop timer) subtracts this to
+/// stay aligned with the shortened file. Lives beside `recording-start.txt`
+/// so any Minutes process, not only the one capturing, sees the same clock.
+pub fn pause_ledger_path() -> PathBuf {
+    Config::minutes_dir().join("recording-pause.json")
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PauseLedger {
+    pub accumulated_secs: u64,
+    pub paused_since: Option<u64>,
+}
+
+impl PauseLedger {
+    pub fn is_paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+
+    /// Total paused seconds including the in-progress pause, at `now`.
+    pub fn paused_secs_at(&self, now: u64) -> u64 {
+        self.accumulated_secs
+            + self
+                .paused_since
+                .map(|since| now.saturating_sub(since))
+                .unwrap_or(0)
+    }
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn read_pause_ledger() -> PauseLedger {
+    fs::read_to_string(pause_ledger_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Seconds the active recording has spent paused so far.
+pub fn paused_seconds() -> u64 {
+    read_pause_ledger().paused_secs_at(epoch_secs())
+}
+
+/// Record a pause or resume in the ledger. Returns `Ok(true)` when the
+/// state changed, `Ok(false)` when it was already in that state.
+pub fn set_recording_paused(paused: bool) -> Result<bool, String> {
+    if !crate::pid::inspect_pid_file(&crate::pid::pid_path()).is_active() {
+        return Err("No recording in progress.".into());
+    }
+    let mut ledger = read_pause_ledger();
+    let now = epoch_secs();
+    let changed = match (ledger.paused_since, paused) {
+        (None, true) => {
+            ledger.paused_since = Some(now);
+            true
+        }
+        (Some(since), false) => {
+            ledger.accumulated_secs += now.saturating_sub(since);
+            ledger.paused_since = None;
+            true
+        }
+        _ => false,
+    };
+    if changed {
+        let path = pause_ledger_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let text = serde_json::to_string(&ledger).map_err(|e| e.to_string())?;
+        fs::write(&path, text).map_err(|e| e.to_string())?;
+    }
+    Ok(changed)
+}
+
 /// Save the recording start timestamp (epoch seconds).
 pub fn save_recording_start() -> std::io::Result<()> {
     let path = recording_start_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // A new recording starts unpaused; never inherit a stale ledger.
+    let _ = fs::remove_file(pause_ledger_path());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -80,7 +163,9 @@ fn elapsed_timestamp() -> Option<String> {
         .ok()?
         .as_secs();
 
-    let elapsed = now.saturating_sub(start_epoch);
+    let elapsed = now
+        .saturating_sub(start_epoch)
+        .saturating_sub(read_pause_ledger().paused_secs_at(now));
     let mins = elapsed / 60;
     let secs = elapsed % 60;
     Some(format!("{}:{:02}", mins, secs))
@@ -220,6 +305,7 @@ pub fn cleanup() {
     let _ = fs::remove_file(context_path());
     clear_consent();
     let _ = fs::remove_file(recording_start_path());
+    let _ = fs::remove_file(pause_ledger_path());
 }
 
 /// Validate that a meeting annotation target is a markdown file inside the
@@ -335,6 +421,21 @@ mod tests {
             std::env::remove_var("HOME");
         }
         result
+    }
+
+    #[test]
+    fn pause_ledger_accumulates_across_pauses() {
+        let mut ledger = PauseLedger::default();
+        assert!(!ledger.is_paused());
+        assert_eq!(ledger.paused_secs_at(100), 0);
+        ledger.paused_since = Some(100);
+        assert!(ledger.is_paused());
+        assert_eq!(ledger.paused_secs_at(130), 30);
+        ledger.accumulated_secs += 30;
+        ledger.paused_since = None;
+        assert_eq!(ledger.paused_secs_at(500), 30);
+        ledger.paused_since = Some(500);
+        assert_eq!(ledger.paused_secs_at(512), 42);
     }
 
     #[test]

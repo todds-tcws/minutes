@@ -72,6 +72,11 @@ pub struct UiConfig {
     pub language: String,
     /// Remembered edge anchor for the movable dictation HUD.
     pub dictation_hud_anchor: String,
+    /// Show the floating recording pill (timer, pause, stop) while the
+    /// desktop app records. Default: true.
+    pub recording_hud_enabled: bool,
+    /// Remembered edge anchor for the movable recording pill.
+    pub recording_hud_anchor: String,
 }
 
 impl Default for UiConfig {
@@ -79,6 +84,8 @@ impl Default for UiConfig {
         Self {
             language: "auto".into(),
             dictation_hud_anchor: "top_center".into(),
+            recording_hud_enabled: true,
+            recording_hud_anchor: "bottom_right".into(),
         }
     }
 }
@@ -903,6 +910,11 @@ pub struct CallDetectionConfig {
     /// Seconds the user has to cancel auto-stop before it fires.
     /// Only meaningful when `stop_when_call_ends` is true. Default: 30.
     pub call_end_stop_countdown_secs: u64,
+    /// Prompt when any app not on the `apps` list holds the microphone,
+    /// labelled by that app (Slack huddles, Discord, FaceTime, a meeting in
+    /// any browser). Same signal Notion uses; needs no extra permission.
+    /// Default: true.
+    pub any_mic_app: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1475,6 +1487,7 @@ impl Default for CallDetectionConfig {
             apps: vec!["zoom.us".into(), "Microsoft Teams".into(), "Webex".into()],
             stop_when_call_ends: false,
             call_end_stop_countdown_secs: 30,
+            any_mic_app: true,
         }
     }
 }

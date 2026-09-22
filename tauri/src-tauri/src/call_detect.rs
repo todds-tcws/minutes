@@ -249,6 +249,21 @@ struct RunningProcess {
     pid: u32,
     ppid: u32,
     name: String,
+    /// Outermost `.app` bundle the executable lives in, without the
+    /// extension (`/Applications/Slack.app/.../Slack Helper (GPU)` -> `Slack`).
+    /// `None` for bare binaries and system daemons.
+    app: Option<String>,
+}
+
+/// Executable names that a configured app may show up as. The new Microsoft
+/// Teams (bundle `com.microsoft.teams2`) runs as `MSTeams` while its helpers
+/// keep the `Microsoft Teams` name, so a config entry of "Microsoft Teams"
+/// has to accept both.
+fn config_app_aliases(config_lower: &str) -> &'static [&'static str] {
+    match config_lower {
+        "microsoft teams" | "microsoft teams (work or school)" => &["msteams"],
+        _ => &[],
+    }
 }
 
 fn process_name_matches_config_app(config_app: &str, process_name: &str) -> bool {
@@ -260,6 +275,90 @@ fn process_name_matches_config_app(config_app: &str, process_name: &str) -> bool
     process_lower == config_lower
         || process_lower.starts_with(&format!("{}.", config_lower))
         || process_lower.starts_with(&format!("{} ", config_lower))
+        || config_app_aliases(&config_lower).contains(&process_lower.as_str())
+}
+
+/// Processes that hold the microphone without being a call: audio and
+/// speech daemons, and Minutes itself while it records.
+const SYSTEM_MIC_HOLDERS: &[&str] = &[
+    "coreaudiod",
+    "corespeechd",
+    "assistantd",
+    "siriactionsd",
+    "sirincservice",
+    "com.apple.speechrecognitioncore.speechrecognitionserver",
+    "minutes",
+    "minutes dev",
+    "minutes-app",
+    "minutes-cli",
+    "minutes-apple-speech-worker",
+];
+
+/// Any non-system process holding the mic, labelled by the app it belongs to.
+///
+/// This is the Notion-style fallback: the specific tiers above know how to
+/// name Zoom, Teams and browser meetings, but a Slack huddle, a Discord call,
+/// FaceTime, or a meeting in a browser without automation permission all
+/// look the same at the CoreAudio level, some app is capturing input. Label
+/// the prompt with that app and let the user decide. Needs no permission.
+fn detect_any_mic_app(
+    processes: &[RunningProcess],
+    active_input_pids: &HashSet<u32>,
+    self_pid: u32,
+) -> Option<(String, String)> {
+    let by_pid: std::collections::HashMap<u32, &RunningProcess> =
+        processes.iter().map(|p| (p.pid, p)).collect();
+    let mut own = HashSet::from([self_pid]);
+    expand_process_family(&mut own, processes);
+    let safari_running = processes.iter().any(|p| p.name == "Safari");
+    let facetime_running = processes.iter().any(|p| p.name == "FaceTime");
+
+    let mut pids: Vec<u32> = active_input_pids.iter().copied().collect();
+    pids.sort_unstable();
+    for pid in pids {
+        if own.contains(&pid) {
+            continue;
+        }
+        let Some(process) = by_pid.get(&pid) else {
+            continue;
+        };
+        let lower = process.name.to_ascii_lowercase();
+        if SYSTEM_MIC_HOLDERS.contains(&lower.as_str()) {
+            continue;
+        }
+        // Safari's audio lives in a WebKit XPC service reparented to launchd;
+        // FaceTime captures through avconferenced. Neither carries the .app.
+        if lower.starts_with("com.apple.webkit") {
+            if safari_running {
+                return Some(("Safari".into(), "Safari".into()));
+            }
+            continue;
+        }
+        if lower == "avconferenced" {
+            if facetime_running {
+                return Some(("FaceTime".into(), "FaceTime".into()));
+            }
+            continue;
+        }
+        // Walk up to the nearest ancestor that lives in an .app bundle.
+        let mut cursor = Some(*process);
+        let mut hops = 0;
+        while let Some(current) = cursor {
+            if let Some(app) = &current.app {
+                let app_lower = app.to_ascii_lowercase();
+                if SYSTEM_MIC_HOLDERS.contains(&app_lower.as_str()) {
+                    break;
+                }
+                return Some((display_name_for(app), app.clone()));
+            }
+            hops += 1;
+            if hops > 6 || current.ppid <= 1 {
+                break;
+            }
+            cursor = by_pid.get(&current.ppid).copied();
+        }
+    }
+    None
 }
 
 /// Add every descendant (through ppid, transitively) of the pids already in
@@ -1019,6 +1118,19 @@ impl CallDetector {
             }
         }
 
+        if config.any_mic_app {
+            if let (Some(processes), Some(active_input_pids)) = (processes, active_input_pids) {
+                if let Some((display_name, process_name)) =
+                    detect_any_mic_app(processes, active_input_pids, std::process::id())
+                {
+                    return DetectActiveCallResult::Detected {
+                        display_name,
+                        process_name,
+                    };
+                }
+            }
+        }
+
         DetectActiveCallResult::None
     }
 
@@ -1216,7 +1328,7 @@ impl CallDetector {
 fn display_name_for(process: &str) -> String {
     match process {
         "zoom.us" => "Zoom".into(),
-        "Microsoft Teams" | "Microsoft Teams (work or school)" => "Teams".into(),
+        "Microsoft Teams" | "Microsoft Teams (work or school)" | "MSTeams" => "Teams".into(),
         "FaceTime" => "FaceTime".into(),
         "Webex" => "Webex".into(),
         "Slack" => "Slack".into(),
@@ -1290,6 +1402,27 @@ const BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         fragment: "arc",
         app_name: "Arc",
+        kind: BrowserKind::ChromeLike,
+        exact: true,
+        attribution: BrowserAttribution::GenericGate,
+    },
+    BrowserSpec {
+        fragment: "brave browser",
+        app_name: "Brave Browser",
+        kind: BrowserKind::ChromeLike,
+        exact: false,
+        attribution: BrowserAttribution::GenericGate,
+    },
+    BrowserSpec {
+        fragment: "microsoft edge",
+        app_name: "Microsoft Edge",
+        kind: BrowserKind::ChromeLike,
+        exact: false,
+        attribution: BrowserAttribution::GenericGate,
+    },
+    BrowserSpec {
+        fragment: "vivaldi",
+        app_name: "Vivaldi",
         kind: BrowserKind::ChromeLike,
         exact: true,
         attribution: BrowserAttribution::GenericGate,
@@ -1528,11 +1661,21 @@ fn is_teams_v2_root(url: &str) -> bool {
         .strip_prefix("https://")
         .or_else(|| lower.strip_prefix("http://"))
         .unwrap_or(&lower);
-    without_scheme.starts_with("teams.live.com/v2/")
-        || without_scheme.starts_with("teams.microsoft.com/v2/")
-        || without_scheme == "teams.live.com/v2"
-        || without_scheme == "teams.microsoft.com/v2"
+    TEAMS_HOSTS.iter().any(|host| {
+        without_scheme
+            .strip_prefix(host)
+            .is_some_and(|rest| rest == "/v2" || rest.starts_with("/v2/"))
+    })
 }
+
+/// Hosts the Teams web client is served from. `teams.cloud.microsoft` is the
+/// newer work/school domain that replaced `teams.microsoft.com` for many
+/// tenants in 2025; `teams.live.com` is personal Teams.
+const TEAMS_HOSTS: &[&str] = &[
+    "teams.live.com",
+    "teams.microsoft.com",
+    "teams.cloud.microsoft",
+];
 
 /// Combined Teams meeting check: URL pattern OR (Teams v2 root + meeting-y
 /// tab title). The title fallback exists because the Teams web SPA does not
@@ -1570,7 +1713,10 @@ fn looks_like_teams_meeting_url(url: &str) -> bool {
             || rest.contains("meet/");
     }
 
-    let Some(rest) = without_scheme.strip_prefix("teams.microsoft.com/") else {
+    let Some(rest) = without_scheme
+        .strip_prefix("teams.microsoft.com/")
+        .or_else(|| without_scheme.strip_prefix("teams.cloud.microsoft/"))
+    else {
         return false;
     };
 
@@ -1674,9 +1820,20 @@ fn process_snapshots_from_ps_output(text: &str) -> Vec<RunningProcess> {
                 pid,
                 ppid,
                 name: binary_name_from_command(command),
+                app: app_bundle_from_command(command),
             })
         })
         .collect()
+}
+
+/// Name of the outermost `.app` bundle in an executable path, if any.
+fn app_bundle_from_command(command: &str) -> Option<String> {
+    command
+        .trim()
+        .split('/')
+        .find_map(|segment| segment.strip_suffix(".app"))
+        .filter(|stem| !stem.is_empty())
+        .map(str::to_string)
 }
 
 /// Check if any audio input is currently being used.
@@ -1765,6 +1922,7 @@ mod tests {
             apps,
             stop_when_call_ends: false,
             call_end_stop_countdown_secs: 30,
+            any_mic_app: false,
         }
     }
 
@@ -1973,11 +2131,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "zoom.us".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 200,
                 ppid: 1,
                 name: "Google Chrome".into(),
+                app: None,
             },
         ];
 
@@ -2063,11 +2223,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "zoom.us".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 200,
                 ppid: 1,
                 name: "Google Chrome".into(),
+                app: None,
             },
         ];
         let active_input_pids = HashSet::from([100]);
@@ -2102,11 +2264,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "Slack".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 200,
                 ppid: 1,
                 name: "Google Chrome".into(),
+                app: None,
             },
         ];
         let active_input_pids = HashSet::from([100]);
@@ -2138,11 +2302,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "zoom.us".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 200,
                 ppid: 1,
                 name: "superwhisper".into(),
+                app: None,
             },
         ];
         let active_input_pids = HashSet::from([200]);
@@ -2168,11 +2334,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "zoom.us".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 200,
                 ppid: 1,
                 name: "superwhisper".into(),
+                app: None,
             },
         ];
 
@@ -2197,11 +2365,13 @@ mod tests {
                 pid: 100,
                 ppid: 1,
                 name: "zoom.us".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 110,
                 ppid: 100,
                 name: "ZoomHybridConf".into(),
+                app: None,
             },
         ];
         let active_input_pids = HashSet::from([110]);
@@ -2232,6 +2402,7 @@ mod tests {
             pid: 110,
             ppid: 1,
             name: "ZoomHybridConf".into(),
+            app: None,
         }];
         let active_input_pids = HashSet::from([110]);
 
@@ -2257,11 +2428,13 @@ mod tests {
                 pid: 300,
                 ppid: 1,
                 name: "Microsoft Teams".into(),
+                app: None,
             },
             RunningProcess {
                 pid: 301,
                 ppid: 300,
                 name: "Microsoft Teams Helper".into(),
+                app: None,
             },
         ];
         let active_input_pids = HashSet::from([301]);
@@ -2400,11 +2573,13 @@ mod tests {
                     pid: 100,
                     ppid: 1,
                     name: "zoom.us".into(),
+                    app: Some("zoom.us".into()),
                 },
                 RunningProcess {
                     pid: 200,
                     ppid: 100,
                     name: "Google Chrome".into(),
+                    app: Some("Google Chrome".into()),
                 },
             ]
         );
@@ -2782,6 +2957,7 @@ mod tests {
             pid,
             ppid,
             name: name.into(),
+            app: None,
         }
     }
 
@@ -3027,5 +3203,174 @@ mod tests {
 
         assert!(matches!(result, BrowserMeetProbe::NoMatch));
         assert_eq!(offered.into_inner(), vec!["Google Chrome", "Arc"]);
+    }
+
+    #[test]
+    fn new_teams_msteams_binary_matches_microsoft_teams_config() {
+        assert!(process_name_matches_config_app(
+            "Microsoft Teams",
+            "MSTeams"
+        ));
+        assert!(process_name_matches_config_app(
+            "Microsoft Teams",
+            "Microsoft Teams"
+        ));
+        assert!(!process_name_matches_config_app(
+            "Microsoft Teams",
+            "MSTeamsUpdater"
+        ));
+        assert_eq!(display_name_for("MSTeams"), "Teams");
+    }
+
+    #[test]
+    fn new_teams_main_process_holding_mic_detects_native_call() {
+        let detector =
+            CallDetector::new(test_call_detection_config(vec!["Microsoft Teams".into()]));
+        let config = detector.current_config();
+        let processes = vec![
+            process(15340, 1, "MSTeams"),
+            process(15502, 15340, "Microsoft Teams"),
+        ];
+        let active_input_pids = HashSet::from([15340]);
+        let result = detector.detect_active_call_from_process_snapshot(
+            &config,
+            true,
+            &processes,
+            Some(&active_input_pids),
+            false,
+            |_detector, _running, _want_meet, _want_teams| None,
+        );
+        assert_eq!(
+            result,
+            DetectActiveCallResult::Detected {
+                display_name: "Teams".into(),
+                process_name: "Microsoft Teams".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn teams_cloud_microsoft_host_is_recognized() {
+        assert!(looks_like_teams_meeting_url(
+            "https://teams.cloud.microsoft/v2/#/meetup-join/19:meeting_abc@thread.v2/0"
+        ));
+        assert!(looks_like_teams_meeting_url(
+            "https://teams.cloud.microsoft/l/meetup-join/19%3ameeting_abc%40thread.v2/0"
+        ));
+        assert!(!looks_like_teams_meeting_url(
+            "https://teams.cloud.microsoft/v2/"
+        ));
+        assert!(is_teams_v2_root("https://teams.cloud.microsoft/v2/"));
+        assert!(looks_like_teams_meeting_tab(
+            "https://teams.cloud.microsoft/v2/",
+            "Meeting | Standup | Microsoft Teams"
+        ));
+        assert!(!looks_like_teams_meeting_tab(
+            "https://teams.cloud.microsoft/v2/",
+            "Chat | Project Apollo | Microsoft Teams"
+        ));
+    }
+
+    #[test]
+    fn app_bundle_is_the_outermost_dot_app() {
+        assert_eq!(
+            app_bundle_from_command(
+                "/Applications/Slack.app/Contents/Frameworks/Slack Helper (GPU).app/Contents/MacOS/Slack Helper (GPU)"
+            ),
+            Some("Slack".into())
+        );
+        assert_eq!(
+            app_bundle_from_command("/Applications/Microsoft Teams.app/Contents/MacOS/MSTeams"),
+            Some("Microsoft Teams".into())
+        );
+        assert_eq!(app_bundle_from_command("/usr/sbin/coreaudiod"), None);
+        assert_eq!(app_bundle_from_command("minutes"), None);
+    }
+
+    fn bundled(pid: u32, ppid: u32, name: &str, app: &str) -> RunningProcess {
+        RunningProcess {
+            pid,
+            ppid,
+            name: name.into(),
+            app: Some(app.into()),
+        }
+    }
+
+    #[test]
+    fn any_mic_app_labels_slack_huddle_by_bundle_and_ignores_daemons_and_self() {
+        let self_pid = 4242;
+        let processes = vec![
+            process(90, 1, "coreaudiod"),
+            bundled(500, 1, "Slack", "Slack"),
+            bundled(501, 500, "Slack Helper (GPU)", "Slack"),
+            bundled(self_pid, 1, "Minutes Dev", "Minutes Dev"),
+            process(4300, self_pid, "minutes-apple-speech-worker"),
+        ];
+        // Only daemons and our own process family hold input: nothing to report.
+        assert_eq!(
+            detect_any_mic_app(&processes, &HashSet::from([90, self_pid, 4300]), self_pid),
+            None
+        );
+        // A Slack helper grabs the mic: label it by the Slack bundle.
+        assert_eq!(
+            detect_any_mic_app(&processes, &HashSet::from([90, 501]), self_pid),
+            Some(("Slack".into(), "Slack".into()))
+        );
+    }
+
+    #[test]
+    fn any_mic_app_attributes_webkit_audio_to_safari() {
+        let processes = vec![
+            process(600, 1, "Safari"),
+            process(601, 1, "com.apple.WebKit.GPU"),
+        ];
+        assert_eq!(
+            detect_any_mic_app(&processes, &HashSet::from([601]), 4242),
+            Some(("Safari".into(), "Safari".into()))
+        );
+        let without_safari = vec![process(601, 1, "com.apple.WebKit.GPU")];
+        assert_eq!(
+            detect_any_mic_app(&without_safari, &HashSet::from([601]), 4242),
+            None
+        );
+    }
+
+    #[test]
+    fn any_mic_app_is_the_last_tier_and_respects_the_toggle() {
+        let mut config = test_call_detection_config(vec!["zoom.us".into()]);
+        config.any_mic_app = true;
+        let detector = CallDetector::new(config);
+        let config = detector.current_config();
+        let processes = vec![bundled(700, 1, "Discord", "Discord")];
+        let active = HashSet::from([700]);
+        let result = detector.detect_active_call_from_process_snapshot(
+            &config,
+            true,
+            &processes,
+            Some(&active),
+            false,
+            |_d, _r, _m, _t| None,
+        );
+        assert_eq!(
+            result,
+            DetectActiveCallResult::Detected {
+                display_name: "Discord".into(),
+                process_name: "Discord".into(),
+            }
+        );
+
+        let mut config = test_call_detection_config(vec!["zoom.us".into()]);
+        config.any_mic_app = false;
+        let detector = CallDetector::new(config);
+        let config = detector.current_config();
+        let result = detector.detect_active_call_from_process_snapshot(
+            &config,
+            true,
+            &processes,
+            Some(&active),
+            false,
+            |_d, _r, _m, _t| None,
+        );
+        assert_eq!(result, DetectActiveCallResult::None);
     }
 }

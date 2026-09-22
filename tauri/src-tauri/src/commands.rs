@@ -3635,6 +3635,7 @@ fn start_native_call_recording(
         .ok();
     crate::sync_tray_state(app_handle);
     minutes_core::notes::save_recording_start().ok();
+    show_recording_hud(app_handle);
     maybe_save_and_show_recording_consent(app_handle, mode, config);
     // Native capture writes audio to per-source stems instead of handing samples
     // to the recording path, so the live sidecar had no source and live
@@ -6382,6 +6383,7 @@ pub fn start_recording(
     crate::sync_tray_state(&app_handle);
 
     minutes_core::notes::save_recording_start().ok();
+    show_recording_hud(&app_handle);
     maybe_save_and_show_recording_consent(&app_handle, mode, &config);
     eprintln!("{} started...", mode.noun());
 
@@ -7292,7 +7294,9 @@ fn status_value(state: &AppState, include_readiness: bool) -> serde_json::Value 
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    let e = now.saturating_sub(start);
+                    let e = now
+                        .saturating_sub(start)
+                        .saturating_sub(minutes_core::notes::paused_seconds());
                     Some(format!("{}:{:02}", e / 60, e % 60))
                 } else {
                     None
@@ -7340,6 +7344,7 @@ fn status_value(state: &AppState, include_readiness: bool) -> serde_json::Value 
         "callCaptureHealth": call_capture_health,
         "pid": status.pid,
         "elapsed": elapsed,
+        "paused": recording_active && minutes_core::notes::read_pause_ledger().is_paused(),
         "sensitive": sensitive_session.as_ref().map(|session| serde_json::json!({
             "active": true,
             "id": session.id,
@@ -12963,6 +12968,7 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "teams_web_enabled": call_detection_has_sentinel(&config, "teams-web"),
             "stop_when_call_ends": config.call_detection.stop_when_call_ends,
             "call_end_stop_countdown_secs": config.call_detection.call_end_stop_countdown_secs,
+            "any_mic_app": config.call_detection.any_mic_app,
         },
         "dictation": {
             "backend": config.dictation.backend,
@@ -13015,7 +13021,10 @@ pub fn cmd_get_settings() -> serde_json::Value {
         "ui": {
             "language": config.ui.language,
             "dictation_hud_anchor": config.ui.dictation_hud_anchor,
+            "recording_hud_enabled": config.ui.recording_hud_enabled,
+            "recording_hud_anchor": config.ui.recording_hud_anchor,
         },
+        "output_dir": config.output_dir.display().to_string(),
     })
 }
 
@@ -13346,6 +13355,12 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
         ("call_detection", "stop_when_call_ends") => {
             config.call_detection.stop_when_call_ends = value == "true";
+        }
+        ("call_detection", "any_mic_app") => {
+            config.call_detection.any_mic_app = value == "true";
+        }
+        ("ui", "recording_hud_enabled") => {
+            config.ui.recording_hud_enabled = value == "true";
         }
         ("call_detection", "call_end_stop_countdown_secs") => {
             let parsed: u64 = value
@@ -20545,6 +20560,302 @@ pub fn cmd_remember_dictation_hud_position(app: tauri::AppHandle) -> Result<Stri
     Ok(anchor.into())
 }
 
+// ── Recording HUD (floating pill: timer, pause, stop) ───────────
+
+const RECORDING_HUD_LABEL: &str = "recording-hud";
+const RECORDING_HUD_WIDTH: f64 = 248.0;
+const RECORDING_HUD_HEIGHT: f64 = 44.0;
+
+/// Show the floating recording pill. Rebuilt from scratch each time so a
+/// stale transparent WebView never overlaps the new one (same reason as the
+/// dictation overlay). The pill closes itself when `cmd_capture_status`
+/// stops reporting an active recording, so no stop path has to remember it.
+pub(crate) fn show_recording_hud(app: &tauri::AppHandle) {
+    use tauri::WebviewUrl;
+
+    let config = Config::load();
+    if !config.ui.recording_hud_enabled {
+        return;
+    }
+    if let Some(win) = app.get_webview_window(RECORDING_HUD_LABEL) {
+        win.destroy().ok();
+    }
+
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|window| window.primary_monitor().ok().flatten())
+        });
+    let (x, y) = if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let work_area = monitor.work_area();
+        dictation_hud_anchor_position(
+            &config.ui.recording_hud_anchor,
+            work_area.position.x as f64 / scale,
+            work_area.position.y as f64 / scale,
+            work_area.size.width as f64 / scale,
+            work_area.size.height as f64 / scale,
+            RECORDING_HUD_WIDTH,
+            RECORDING_HUD_HEIGHT,
+        )
+    } else {
+        dictation_hud_anchor_position(
+            &config.ui.recording_hud_anchor,
+            0.0,
+            0.0,
+            1440.0,
+            900.0,
+            RECORDING_HUD_WIDTH,
+            RECORDING_HUD_HEIGHT,
+        )
+    };
+
+    match tauri::WebviewWindowBuilder::new(
+        app,
+        RECORDING_HUD_LABEL,
+        WebviewUrl::App("recording-hud.html".into()),
+    )
+    .title(minutes_core::i18n::tr("Recording"))
+    .inner_size(RECORDING_HUD_WIDTH, RECORDING_HUD_HEIGHT)
+    .position(x, y)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .content_protected(config.privacy.hide_from_screen_share)
+    .always_on_top(true)
+    .focused(false)
+    .focusable(false)
+    .skip_taskbar(true)
+    .build()
+    {
+        Ok(_) => eprintln!("[recording-hud] shown"),
+        Err(e) => eprintln!("[recording-hud] failed: {}", e),
+    }
+}
+
+fn set_recording_pause(app: &tauri::AppHandle, paused: bool) -> Result<serde_json::Value, String> {
+    // Read before flipping so the resume note can say how long the gap was.
+    let ledger = minutes_core::notes::read_pause_ledger();
+    let changed = minutes_core::capture::set_recording_paused(paused)?;
+    crate::call_capture::signal_native_call_helper_pause(paused);
+    if changed {
+        let note = if paused {
+            "Recording paused".to_string()
+        } else {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let gap = ledger
+                .paused_since
+                .map(|since| now.saturating_sub(since))
+                .unwrap_or(0);
+            format!(
+                "Recording resumed after a {}:{:02} pause",
+                gap / 60,
+                gap % 60
+            )
+        };
+        // Best effort: the marker helps readers of the transcript; a failed
+        // note must never block the pause itself.
+        let _ = minutes_core::notes::add_recording_note(&note);
+        app.emit("recording:paused", paused).ok();
+    }
+    Ok(serde_json::json!({ "paused": paused, "changed": changed }))
+}
+
+#[tauri::command]
+pub fn cmd_pause_recording(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    set_recording_pause(&app, true)
+}
+
+#[tauri::command]
+pub fn cmd_resume_recording(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    set_recording_pause(&app, false)
+}
+
+#[tauri::command]
+pub fn cmd_close_recording_hud(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(RECORDING_HUD_LABEL) {
+        win.destroy().ok();
+    }
+}
+
+#[tauri::command]
+pub fn cmd_remember_recording_hud_position(app: tauri::AppHandle) -> Result<String, String> {
+    let window = app
+        .get_webview_window(RECORDING_HUD_LABEL)
+        .ok_or_else(|| "Recording HUD is not open".to_string())?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or_else(|| "Could not identify the recording HUD monitor".to_string())?;
+    let scale = monitor.scale_factor();
+    let work_area = monitor.work_area();
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let work_x = work_area.position.x as f64 / scale;
+    let work_y = work_area.position.y as f64 / scale;
+    let work_width = work_area.size.width as f64 / scale;
+    let work_height = work_area.size.height as f64 / scale;
+    let center_x = position.x as f64 / scale + size.width as f64 / scale / 2.0;
+    let center_y = position.y as f64 / scale + size.height as f64 / scale / 2.0;
+    let anchor =
+        nearest_dictation_hud_anchor(center_x, center_y, work_x, work_y, work_width, work_height);
+    let mut config = Config::load();
+    config.ui.recording_hud_anchor = anchor.into();
+    config.save().map_err(|error| error.to_string())?;
+    Ok(anchor.into())
+}
+
+// ── Meetings folder (output_dir) ────────────────────────────────
+
+/// True when `inner` is `outer` or lives somewhere beneath it.
+fn path_is_within(inner: &Path, outer: &Path) -> bool {
+    inner.starts_with(outer)
+}
+
+fn copy_dir_recursive_then_remove(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_dir_recursive_then_remove(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        std::fs::remove_dir(from)?;
+    } else {
+        std::fs::copy(from, to)?;
+        std::fs::remove_file(from)?;
+    }
+    Ok(())
+}
+
+/// Move one directory entry, falling back to copy+delete across volumes.
+fn move_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+            copy_dir_recursive_then_remove(from, to)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Plan for relocating the meetings folder: which entries move and whether
+/// anything would collide in the destination. Pure so the tests can drive it.
+fn plan_output_dir_move(old_dir: &Path, new_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let Ok(entries) = std::fs::read_dir(old_dir) else {
+        return Ok(Vec::new());
+    };
+    let mut to_move = Vec::new();
+    let mut conflicts = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy() == ".DS_Store" {
+            continue;
+        }
+        if new_dir.join(&name).exists() {
+            conflicts.push(name.to_string_lossy().to_string());
+        }
+        to_move.push(entry.path());
+    }
+    if !conflicts.is_empty() {
+        conflicts.sort();
+        return Err(format!(
+            "The new folder already contains: {}. Pick an empty folder, or choose \"Just switch\" to leave existing notes where they are.",
+            conflicts.join(", ")
+        ));
+    }
+    Ok(to_move)
+}
+
+/// Change where meetings, memos and processed output are stored. Optionally
+/// moves the current contents across. Refuses while a recording or
+/// processing job is active, because both hold paths under the old folder.
+#[tauri::command]
+pub fn cmd_set_output_dir(path: String, move_existing: bool) -> Result<serde_json::Value, String> {
+    let requested = PathBuf::from(path.trim());
+    if !requested.is_absolute() {
+        return Err("Choose a full folder path.".into());
+    }
+    let status = minutes_core::pid::status();
+    if status.recording || status.processing || minutes_core::jobs::active_job_count() > 0 {
+        return Err(
+            "Finish the current recording and let processing complete before moving the meetings folder.".into(),
+        );
+    }
+    std::fs::create_dir_all(&requested)
+        .map_err(|error| format!("Could not create {}: {error}", requested.display()))?;
+    let new_dir = requested
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve {}: {error}", requested.display()))?;
+
+    let mut config = Config::load();
+    let old_dir = config
+        .output_dir
+        .canonicalize()
+        .unwrap_or_else(|_| config.output_dir.clone());
+    if old_dir == new_dir {
+        return Ok(serde_json::json!({
+            "output_dir": new_dir.display().to_string(),
+            "moved_entries": 0,
+            "unchanged": true,
+        }));
+    }
+
+    let mut moved_entries = 0usize;
+    if move_existing {
+        if path_is_within(&new_dir, &old_dir) || path_is_within(&old_dir, &new_dir) {
+            return Err(
+                "The new folder cannot be inside the current meetings folder (or contain it) when moving notes.".into(),
+            );
+        }
+        let entries = plan_output_dir_move(&old_dir, &new_dir)?;
+        for from in entries {
+            let Some(name) = from.file_name() else {
+                continue;
+            };
+            move_entry(&from, &new_dir.join(name)).map_err(|error| {
+                format!(
+                    "Moved {moved_entries} item(s), then failed on {}: {error}. The meetings folder setting was left unchanged.",
+                    from.display()
+                )
+            })?;
+            moved_entries += 1;
+        }
+    }
+
+    config.output_dir = new_dir.clone();
+    config.save().map_err(|error| error.to_string())?;
+
+    // A symlinked vault points at the old folder; re-point it so the vault
+    // keeps showing the same notes.
+    if config.vault.enabled && config.vault.strategy != "copy" && config.vault.strategy != "direct"
+    {
+        let link = config.vault.path.join(&config.vault.meetings_subdir);
+        if link
+            .symlink_metadata()
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(&link);
+            if let Err(error) = minutes_core::vault::create_symlink(&link, &new_dir) {
+                eprintln!("[storage] could not re-point vault symlink: {error}");
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "output_dir": new_dir.display().to_string(),
+        "moved_entries": moved_entries,
+        "unchanged": false,
+    }))
+}
+
 // ── Copilot Coach HUD commands ──────────────────────────────
 
 fn current_copilot_hud(hud: &Arc<Mutex<CopilotHudSnapshot>>) -> CopilotHudSnapshot {
@@ -24321,5 +24632,61 @@ mod external_stop_tests {
             external_stop_decision(true, false),
             ExternalStopDecision::RefuseForeign
         );
+    }
+}
+
+#[cfg(test)]
+mod output_dir_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn move_plan_lists_entries_and_rejects_collisions() {
+        let old = TempDir::new().unwrap();
+        let new = TempDir::new().unwrap();
+        std::fs::write(old.path().join("2026-01-01-standup.md"), "x").unwrap();
+        std::fs::create_dir_all(old.path().join("memos")).unwrap();
+        std::fs::write(old.path().join(".DS_Store"), "").unwrap();
+
+        let plan = plan_output_dir_move(old.path(), new.path()).unwrap();
+        let mut names: Vec<String> = plan
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["2026-01-01-standup.md", "memos"]);
+
+        std::fs::create_dir_all(new.path().join("memos")).unwrap();
+        let error = plan_output_dir_move(old.path(), new.path()).unwrap_err();
+        assert!(error.contains("memos"), "{error}");
+    }
+
+    #[test]
+    fn move_entry_moves_files_and_directories() {
+        let old = TempDir::new().unwrap();
+        let new = TempDir::new().unwrap();
+        std::fs::create_dir_all(old.path().join("memos/nested")).unwrap();
+        std::fs::write(old.path().join("memos/nested/a.md"), "a").unwrap();
+        std::fs::write(old.path().join("b.md"), "b").unwrap();
+
+        move_entry(&old.path().join("memos"), &new.path().join("memos")).unwrap();
+        move_entry(&old.path().join("b.md"), &new.path().join("b.md")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(new.path().join("memos/nested/a.md")).unwrap(),
+            "a"
+        );
+        assert!(!old.path().join("memos").exists());
+        assert!(!old.path().join("b.md").exists());
+        assert!(std::fs::read_dir(old.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn nested_folders_are_detected() {
+        let root = Path::new("/Users/x/meetings");
+        assert!(path_is_within(Path::new("/Users/x/meetings/archive"), root));
+        assert!(path_is_within(root, root));
+        assert!(!path_is_within(Path::new("/Users/x/meetings-2"), root));
+        assert!(!path_is_within(Path::new("/Users/x"), root));
     }
 }

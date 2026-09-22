@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recording</title>
+  <script src="scripts/ui-zoom.js"></script>
+  <script src="locales/zh-CN.js"></script>
+  <script src="locales/pt-BR.js"></script>
+  <script src="scripts/i18n.js"></script>
+  <link rel="stylesheet" href="styles/ui-zoom-tokens.css">
+  <style>
+    @font-face {
+      font-family: 'Geist';
+      font-style: normal;
+      font-weight: 500;
+      src: url('fonts/Geist-Medium.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Geist Mono';
+      font-style: normal;
+      font-weight: 400;
+      src: url('fonts/GeistMono-Regular.woff2') format('woff2');
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      color-scheme: light dark;
+      --bg:          #1C1C1A;
+      --border:      #2A2924;
+      --text:        #E8E4DA;
+      --text-dim:    #8C8880;
+      --btn-bg:      rgba(255, 255, 255, 0.07);
+      --btn-hover:   rgba(255, 255, 255, 0.14);
+      --red:         #FF453A;
+      --red-ring:    rgba(255, 69, 58, 0.22);
+      --amber:       #FFB340;
+      --shadow:
+        0 14px 28px rgba(0, 0, 0, 0.35),
+        0 4px 10px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:        #F4F1EA;
+        --border:    rgba(0, 0, 0, 0.13);
+        --text:      #1A1916;
+        --text-dim:  #6B6760;
+        --btn-bg:    rgba(0, 0, 0, 0.06);
+        --btn-hover: rgba(0, 0, 0, 0.12);
+        --red:       #C0392B;
+        --red-ring:  rgba(192, 57, 43, 0.20);
+        --amber:     #B9770E;
+        --shadow:
+          0 14px 28px rgba(0, 0, 0, 0.12),
+          0 4px 10px rgba(0, 0, 0, 0.08),
+          inset 0 1px 0 rgba(0, 0, 0, 0.03);
+      }
+    }
+
+    html, body { width: 100%; height: 100%; }
+    body {
+      font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: transparent;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      display: flex;
+      align-items: center;
+    }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+      height: 2.5rem;
+      padding: 0 0.5rem 0 0.75rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 1.25rem;
+      box-shadow: var(--shadow);
+      cursor: grab;
+      animation: appear 200ms ease-out;
+    }
+    .pill:active { cursor: grabbing; }
+    @keyframes appear {
+      from { opacity: 0; transform: translateY(8px) scale(0.985); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .dot {
+      width: 0.625rem;
+      height: 0.625rem;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 0 3px var(--red-ring);
+      flex-shrink: 0;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .pill.paused .dot {
+      background: var(--amber);
+      box-shadow: none;
+      animation: none;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(0.82); opacity: 0.55; }
+    }
+
+    .timer {
+      font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.875rem;
+      color: var(--text);
+      min-width: 3.25rem;
+      letter-spacing: 0.02em;
+    }
+    .pill.paused .timer { color: var(--text-dim); }
+
+    .label {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      height: 1.75rem;
+      padding: 0 0.625rem;
+      border-radius: 0.875rem;
+      background: var(--btn-bg);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      flex-shrink: 0;
+      transition: background 120ms ease;
+    }
+    button:hover { background: var(--btn-hover); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.stop { background: var(--red); color: #fff; }
+    button.stop:hover { filter: brightness(1.08); }
+    button svg { width: 0.7rem; height: 0.7rem; fill: currentColor; }
+  </style>
+</head>
+<body>
+  <div class="pill" id="pill" role="status" aria-live="polite">
+    <div class="dot" aria-hidden="true"></div>
+    <div class="timer" id="timer">0:00</div>
+    <div class="label" id="label" data-i18n="Recording">Recording</div>
+    <button id="pause" type="button" aria-pressed="false" title="Pause recording">
+      <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="1.5" width="3" height="9" rx="0.8"/><rect x="7" y="1.5" width="3" height="9" rx="0.8"/></svg>
+      <span id="pause-text" data-i18n="Pause">Pause</span>
+    </button>
+    <button id="stop" class="stop" type="button" title="Stop recording">
+      <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1.5"/></svg>
+      <span data-i18n="Stop">Stop</span>
+    </button>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    const pill = document.getElementById('pill');
+    const timer = document.getElementById('timer');
+    const label = document.getElementById('label');
+    const pauseButton = document.getElementById('pause');
+    const pauseText = document.getElementById('pause-text');
+    const stopButton = document.getElementById('stop');
+
+    const t = (key) => (window.MinutesI18n && window.MinutesI18n.t ? window.MinutesI18n.t(key) : key);
+
+    let paused = false;
+    let busy = false;
+    let missedPolls = 0;
+
+    function render() {
+      pill.classList.toggle('paused', paused);
+      pauseButton.setAttribute('aria-pressed', String(paused));
+      pauseText.textContent = paused ? t('Resume') : t('Pause');
+      pauseButton.title = paused ? t('Resume recording') : t('Pause recording');
+      label.textContent = paused ? t('Paused') : t('Recording');
+    }
+
+    async function poll() {
+      try {
+        const status = await invoke('cmd_capture_status');
+        if (!status.recording) {
+          // Two consecutive "not recording" reads guard against the brief
+          // window where the flag flips while the backend swaps state.
+          missedPolls += 1;
+          if (missedPolls >= 2) {
+            await invoke('cmd_close_recording_hud');
+            return;
+          }
+        } else {
+          missedPolls = 0;
+        }
+        if (typeof status.elapsed === 'string') timer.textContent = status.elapsed;
+        if (typeof status.paused === 'boolean' && status.paused !== paused) {
+          paused = status.paused;
+          render();
+        }
+      } catch (error) {
+        console.error('recording hud status:', error);
+      }
+    }
+
+    pauseButton.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      if (busy) return;
+      busy = true;
+      pauseButton.disabled = true;
+      try {
+        const result = await invoke(paused ? 'cmd_resume_recording' : 'cmd_pause_recording');
+        paused = Boolean(result && result.paused);
+        render();
+      } catch (error) {
+        console.error('recording hud pause:', error);
+      } finally {
+        busy = false;
+        pauseButton.disabled = false;
+      }
+    });
+
+    stopButton.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      if (busy) return;
+      busy = true;
+      stopButton.disabled = true;
+      pauseButton.disabled = true;
+      label.textContent = t('Stopping…');
+      try {
+        if (paused) {
+          // Resume first so the ledger closes cleanly and the stop path sees
+          // a live capture; the resume note is harmless in the transcript.
+          await invoke('cmd_resume_recording').catch(() => {});
+        }
+        await invoke('cmd_stop_recording');
+      } catch (error) {
+        console.error('recording hud stop:', error);
+        busy = false;
+        stopButton.disabled = false;
+        pauseButton.disabled = false;
+        render();
+      }
+    });
+
+    // Drag anywhere on the pill that is not a button; remember the corner.
+    pill.addEventListener('mousedown', async (event) => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+      try {
+        await window.__TAURI__.window.getCurrentWindow().startDragging();
+        await invoke('cmd_remember_recording_hud_position');
+      } catch (error) {
+        console.error('recording hud drag:', error);
+      }
+    });
+
+    listen('recording:paused', (event) => {
+      paused = Boolean(event.payload);
+      render();
+    });
+
+    render();
+    poll();
+    setInterval(poll, 1000);
+  </script>
+</body>
+</html>

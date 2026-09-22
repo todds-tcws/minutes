@@ -6455,6 +6455,13 @@
           </div>
         </div>
         <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Floating recording controls</div>
+            <div class="about-controls-meta">Small always-on-top pill with the timer, Pause, and Stop while recording. Drag it to any corner. Pause cuts the audio out of the recording.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-recording-hud">On</button>
+        </div>
+        <div class="about-controls">
           <div class="about-controls-copy">Show completion alerts</div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-notifications">On</button>
         </div>
@@ -7035,11 +7042,20 @@
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Microsoft Teams (web) detection (experimental)</div>
-            <div class="about-controls-meta">Opt-in browser integration for Teams meetings in Arc, Chrome, and Safari.
-              Matches Teams meeting URLs only (chat/calendar pages are ignored). Requires macOS browser automation
-              permission on first use, and backs off after failures instead of probing every second.</div>
+            <div class="about-controls-meta">Opt-in browser integration for Teams meetings in Arc, Brave, Chrome, Edge,
+              Safari, and Vivaldi. Matches Teams meeting URLs only (chat/calendar pages are ignored). Requires macOS
+              browser automation permission on first use, and backs off after failures instead of probing every second.</div>
           </div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection-teams-web">Off</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Any app using the microphone</div>
+            <div class="about-controls-meta">Prompt when any other app starts capturing the microphone, named after that
+              app: Slack huddles, Discord, FaceTime, or a meeting in any browser. Checked after the specific Zoom, Teams,
+              and Meet rules. Needs no extra permission and never listens to audio.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection-any-mic-app">On</button>
         </div>
         <div class="about-controls">
           <div class="about-controls-group">
@@ -7207,6 +7223,14 @@
       <!-- Storage -->
       <div class="settings-section settings-section-tight">
         <div class="about-item-title">STORAGE</div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Meetings folder</div>
+            <div class="about-controls-meta" id="settings-output-dir" title="">Loading...</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="settings-output-dir-change">Change…</button>
+        </div>
+        <div class="about-controls-meta settings-compact-meta" id="settings-output-dir-status"></div>
         <div id="settings-storage-info" class="settings-storage-meta">
           Loading...
         </div>
@@ -12506,7 +12530,11 @@
           setSettingsToggle('settings-call-detection-google-meet', Boolean(s.call_detection.google_meet_enabled));
           setSettingsToggle('settings-call-detection-teams-web', Boolean(s.call_detection.teams_web_enabled));
           setSettingsToggle('settings-call-detection-stop-when-call-ends', Boolean(s.call_detection.stop_when_call_ends));
+          setSettingsToggle('settings-call-detection-any-mic-app', s.call_detection.any_mic_app !== false);
           document.getElementById('settings-call-detection-countdown-secs').value = String(s.call_detection.call_end_stop_countdown_secs ?? 30);
+        }
+        if (s.ui) {
+          setSettingsToggle('settings-recording-hud', s.ui.recording_hud_enabled !== false);
         }
         // Dictation settings
         if (s.dictation) {
@@ -12965,7 +12993,56 @@
       else if (s.summarization.engine === 'claude') el.textContent = s.summarization.anthropic_key_set ? 'API key set' : 'ANTHROPIC_API_KEY not found in environment';
       else if (s.summarization.engine === 'openai') el.textContent = s.summarization.openai_key_set ? 'API key set' : 'OPENAI_API_KEY not found in environment';
     }
+    async function loadOutputDir() {
+      try {
+        const s = await invoke('cmd_get_settings');
+        const el = document.getElementById('settings-output-dir');
+        el.textContent = s.output_dir || '~/meetings';
+        el.title = s.output_dir || '';
+      } catch (e) { console.error('loadOutputDir:', e); }
+    }
+    document.getElementById('settings-output-dir-change').addEventListener('click', async () => {
+      const status = document.getElementById('settings-output-dir-status');
+      const btn = document.getElementById('settings-output-dir-change');
+      status.textContent = '';
+      status.style.color = '';
+      try {
+        const { open, ask } = window.__TAURI__.dialog;
+        const selected = await open({ directory: true, title: 'Choose where Minutes stores meetings and memos' });
+        if (!selected) return;
+        const st = await invoke('cmd_get_storage_stats').catch(() => null);
+        const count = st ? (st.meetings.count || 0) : 0;
+        let moveExisting = false;
+        if (count > 0) {
+          moveExisting = await ask(
+            `Move your existing notes (${count} file${count === 1 ? '' : 's'}) into the new folder?\n\n` +
+            'Choose "Just switch" to leave them where they are; new recordings will go to the new folder.',
+            { title: 'Move existing notes?', kind: 'info', okLabel: 'Move notes', cancelLabel: 'Just switch' }
+          );
+        }
+        btn.disabled = true;
+        btn.textContent = moveExisting ? 'Moving…' : 'Saving…';
+        const result = await invoke('cmd_set_output_dir', { path: selected, moveExisting });
+        await loadOutputDir();
+        loadStorageStats();
+        status.style.color = 'var(--green)';
+        status.textContent = result.unchanged
+          ? 'That is already the meetings folder.'
+          : (moveExisting
+              ? `Moved ${result.moved_entries} item${result.moved_entries === 1 ? '' : 's'} to the new folder.`
+              : 'New recordings will be saved to the new folder. Existing notes stay where they were.');
+        if (typeof loadMeetings === 'function') loadMeetings();
+      } catch (e) {
+        console.error('set output dir:', e);
+        status.style.color = 'var(--red)';
+        status.textContent = String(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Change…';
+      }
+    });
     async function loadStorageStats() {
+      loadOutputDir();
       try {
         const st = await invoke('cmd_get_storage_stats');
         const f = (b) => b > 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : b > 1048576 ? (b / 1048576).toFixed(0) + ' MB' : (b / 1024).toFixed(0) + ' KB';
@@ -12993,6 +13070,14 @@
     });
 
     // Settings General handlers — delegate to existing app logic
+    document.getElementById('settings-recording-hud').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !(s.ui && s.ui.recording_hud_enabled !== false);
+      try {
+        await invoke('cmd_set_setting', { section: 'ui', key: 'recording_hud_enabled', value: String(next) });
+        setSettingsToggle('settings-recording-hud', next);
+      } catch (e) { console.error('recording hud toggle:', e); }
+    });
     document.getElementById('settings-notifications').addEventListener('click', async () => {
       const next = !notifyOnCompletion;
       try { await invoke('cmd_set_completion_notifications', { enabled: next }); setNotificationToggle(next); setSettingsToggle('settings-notifications', next); } catch (e) { console.error(e); }
@@ -13430,6 +13515,12 @@
       const next = !Boolean(s.call_detection.teams_web_enabled);
       await invoke('cmd_set_setting', { section: 'call_detection', key: 'teams_web_enabled', value: String(next) });
       setSettingsToggle('settings-call-detection-teams-web', next);
+    });
+    document.getElementById('settings-call-detection-any-mic-app').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !(s.call_detection.any_mic_app !== false);
+      await invoke('cmd_set_setting', { section: 'call_detection', key: 'any_mic_app', value: String(next) });
+      setSettingsToggle('settings-call-detection-any-mic-app', next);
     });
     document.getElementById('settings-call-detection-stop-when-call-ends').addEventListener('click', async () => {
       const s = await invoke('cmd_get_settings');

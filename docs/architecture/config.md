@@ -340,6 +340,7 @@ Dictation clipboard behavior is platform-specific:
 | `apps` | `["zoom.us","Microsoft Teams","Webex"]` | App names to recognize |
 | `stop_when_call_ends` | `false` | Show an auto-stop countdown when the call ends |
 | `call_end_stop_countdown_secs` | `30` | Seconds before auto-stop fires |
+| `any_mic_app` | `true` | Prompt when any other app holds the microphone (Slack huddles, Discord, FaceTime, any browser), labelled by that app. Apps in `apps` and the Meet/Teams web probes are checked first. |
 
 ### `[palette]` — command palette
 
@@ -516,9 +517,18 @@ For real desktop validation of the Windows and Linux collectors, use
 | `enabled` | `true` | Read upcoming meetings from the system calendar |
 | `use_event_title_for_meeting_title` | `false` | When a recording overlaps a scheduled calendar event, use that event's title as the meeting title instead of the AI-generated one (skips the LLM title refine for that meeting) |
 
+### `[ui]` — desktop app chrome
+
+| key | default | meaning |
+|---|---|---|
+| `language` | `"auto"` | Display language: `auto`, `en`, `zh-CN`, `pt-BR` |
+| `dictation_hud_anchor` | `"top_center"` | Remembered screen edge for the dictation HUD; updated when you drag it |
+| `recording_hud_enabled` | `true` | Show the floating recording pill (timer, pause, stop) while the desktop app records. Pause drops audio; the transcript gets a `Recording paused` / `Recording resumed` note at the cut. |
+| `recording_hud_anchor` | `"bottom_right"` | Remembered screen corner for the recording pill; updated when you drag it |
+
 ### `output_dir` — top-level
 
-Default: `~/meetings` on Unix, `%USERPROFILE%\meetings` on Windows. Change to route everywhere meeting output lives — recordings, memos, processed/, failed-captures/.
+Default: `~/meetings` on Unix, `%USERPROFILE%\meetings` on Windows. Change to route everywhere meeting output lives — recordings, memos, processed/, failed-captures/. The desktop app exposes this under Settings → Advanced → Storage → Change, which can also move the existing notes into the new folder and re-points a symlinked vault.
 
 ## What's not in this file
 
