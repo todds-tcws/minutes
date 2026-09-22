@@ -9,8 +9,8 @@
 | Ticket | none (personal fork, todds-tcws/minutes) |
 | Repo / branch | `~/Developer/01-Personal/minutes` · `feat/live-notes-mic-prompt` (stacked on `feat/notion-parity`) |
 | Platform | macOS desktop (Rust + Tauri v2, plain HTML/JS frontend) |
-| Version | 1.6 — 2026-09-22 (Claude, from Todd's intake answers; six spec-review rounds) |
-| Approved by | pending (Todd, plan gate) |
+| Version | 1.7 — 2026-09-22 (Claude; approval recorded) |
+| Approved by | Todd, 2026-09-22 (plan gate, spec 1.6 + 18-task plan consolidated to about 7 tasks) |
 
 ## 1. Problem, purpose and success (intake)
 
@@ -19,7 +19,7 @@
 | What problem are we solving, in one sentence? | While Minutes records a meeting Todd cannot see what is being captured, and when a call starts the "record?" nudge is an OS notification plus an in-window banner instead of a Notion-style prompt he can act on or snooze in place. | requester |
 | Who has this problem today, and what do they do about it now? | Todd, recording Teams/Slack/Zoom calls on his Mac. Today he opens the main window after the fact or relies on the summary; for prompts he clicks the notification or ignores it. | requester |
 | How will we know it worked? | During a recording the main window shows the transcript growing live with his notes inline; when a call starts a floating card appears top-right within a second offering Record / Not now / snooze, and snoozed apps stop nagging. | requester (paraphrased) |
-| What happens if we do nothing? | Recording stays a black box until processing finishes; repeat prompts for calls he does not want recorded keep interrupting meetings (the same complaint users have about Notion). | *(derived)* |
+| What happens if we do nothing? | Recording stays a black box until processing finishes; repeat prompts for calls he does not want recorded keep interrupting meetings (the same complaint users have about Notion). | requester (confirmed 2026-09-22) |
 | Why now? | Notion-parity round 2 on the fork; round 1 (detection, storage picker, recording pill, Outlook feed) landed 2026-09-21/22. | requester |
 | Hard constraints we must not violate? | Everything stays local on the Mac; no new network calls. Honor `privacy.hide_from_screen_share`. Do not replace `/Applications/Minutes.app`; dev installs go through `./scripts/install-dev-app.sh`. Never install while a recording is active. | requester + repo rules |
 | What is explicitly NOT part of this? | Windows/Linux parity; auto-starting a recording without confirmation; screenshots (Todd's ask "see Minutes in my own screenshots" is already the existing Settings > Privacy toggle and needs no code); Coach HUD changes; changes to detection thresholds beyond snooze gating. | requester |
@@ -135,8 +135,8 @@ Identifiers used below: `app_name` is the display name detection produces (e.g. 
 - Default: the card is mouse-only this round (non-goal above). Owner: Todd.
 - Default: the card appears before the calendar lookup and fills the title in if it arrives within 1.5 s (AC-2.5). Owner: Todd.
 - Default: REQ-1 may ship alone; REQ-2 is all-or-nothing (section 2). Owner: Todd.
-- The section 1 do-nothing row is *(derived)*; Todd sees it at the plan gate with the task list. Owner: Todd.
-- Plan-gate confirmations requested from Todd: (a) accept that certification is capped at NEEDS_WORK until he records RB-1; (b) waive the WCAG audit for the mouse-only card with its toggle defaulting on (personal fork). Owner: Todd.
+- Confirmed by Todd 2026-09-22: the do-nothing row; certification capped at NEEDS_WORK until he records RB-1; WCAG audit waived for the mouse-only card with its toggle defaulting on (personal fork).
+- Task plan: Todd chose to consolidate the PM's 18 tasks to about 7 (pane core + pane UI; card core + config; detection routing + commands; card page; settings + banner removal + i18n; verification). Traceability to AC ids is unchanged.
 - Default: detection while recording is fully silent (AC-2.18). Owner: Todd.
 - Default: `call:ended` for the shown app closes the card (AC-2.8). Owner: Todd.
 - Default: card size 360x156, no persisted window state. Owner: Todd.
@@ -153,6 +153,7 @@ Identifiers used below: `app_name` is the display name detection produces (e.g. 
 |---|---|---|---|
 | 1.0 | 2026-09-22 | Initial | Todd's round-2 asks after the 2026-09-22 intake round |
 | 1.1 | 2026-09-22 | Defined toggle-off surface, reminder path, snooze persistence, window label, multi-display positioning, transcript file edge cases, note ordering and styling, min-size viewport, testable fallback, accepted evidence, non-goals for tray/CLI/accessibility | Spec review round 1 blocking gaps |
+| 1.7 | 2026-09-22 | Approval, do-nothing confirmation, RB-1 ceiling and WCAG waiver recorded; task consolidation noted | Plan gate |
 | 1.6 | 2026-09-22 | Detection while recording is silent (AC-2.18); `call:ended` closes an open card (AC-2.8); failed `cmd_live_view` invoke state (AC-1.14); AC-2.3 restates the card-open precondition; goal line matches AC-2.12/2.13; plan-gate confirmations listed | Spec review round 6 |
 | 1.5 | 2026-09-22 | Append-only ordering model with within-page sort and marker placement (AC-1.3); `cmd_live_view` vs status polling in AC-1.8; `call_detect.rs` edit site and `on_call_detected`/`on_call_ended` in the mechanism; snooze-cancel and i18n-presence positions; AC-2.7/2.8 timer interaction; base-state card evidence | Spec review round 5 |
 | 1.4 | 2026-09-22 | Approval row simplified; REQ-2 priority should; card size and window-state entries; `card_open` cleared on window Destroyed (AC-2.16); declared the three card commands and `CallPromptState`; deterministic null-offset rule in `read_since`; evidence named on every AC; `no recording` precondition on AC-2.12; network-constraint diff check (AC-2.17); restart-while-recording (AC-1.13); mechanical AC-1.9 and dual-scheme AC-1.12 checks | Spec review round 4 |
