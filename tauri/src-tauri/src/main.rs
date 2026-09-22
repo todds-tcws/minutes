@@ -475,6 +475,7 @@ fn window_base_size(label: &str) -> Option<(f64, f64)> {
         "dictation-overlay" => Some((320.0, 88.0)),
         "copilot-hud" => Some(commands::COPILOT_HUD_SIZE),
         "meeting-prompt" => Some((380.0, 240.0)),
+        commands::MEETING_DETECTED_LABEL => Some(commands::MEETING_DETECTED_SIZE),
         _ => None,
     }
 }
@@ -2069,6 +2070,7 @@ fn main() {
                 .with_filename("window-state.json")
                 .skip_initial_state("note")
                 .skip_initial_state("meeting-prompt")
+                .skip_initial_state(commands::MEETING_DETECTED_LABEL)
                 .skip_initial_state("dictation-overlay")
                 .skip_initial_state("copilot-hud")
                 .build(),
@@ -2132,6 +2134,8 @@ fn main() {
             palette_lifecycle: palette_lifecycle.clone(),
             palette_reopen_pending: palette_reopen_pending.clone(),
             pending_meeting_prompts: Arc::new(Mutex::new(HashMap::new())),
+            call_prompt: Arc::new(Mutex::new(Default::default())),
+            meeting_detected_card: Arc::new(Mutex::new(None)),
             recording_started_by_call_detect: recording_started_by_call_detect.clone(),
             call_end_countdown_cancel: call_end_countdown_cancel.clone(),
             call_end_countdown_active: call_end_countdown_active.clone(),
@@ -3070,6 +3074,15 @@ fn main() {
                 // the user closes the main window. Filter to "main" so
                 // we only sync once per system flip (the secondary
                 // windows would otherwise re-fire the same event).
+                // Every close path of the card ends here — a button, the
+                // auto-dismiss, an external recording start, the settings
+                // toggle, an OS close, a webview crash — so this is the one
+                // place that releases the single-card slot.
+                tauri::WindowEvent::Destroyed
+                    if window.label() == commands::MEETING_DETECTED_LABEL =>
+                {
+                    commands::on_meeting_detected_destroyed(window.app_handle());
+                }
                 tauri::WindowEvent::ThemeChanged(theme) if window.label() == "main" => {
                     let app_handle = window.app_handle().clone();
                     if let Some(state) = app_handle.try_state::<TrayAppearanceState>() {
@@ -3185,6 +3198,9 @@ fn main() {
             commands::cmd_open_meeting_url,
             commands::cmd_get_meeting_prompt,
             commands::cmd_close_meeting_prompt,
+            commands::cmd_get_meeting_detected,
+            commands::cmd_close_meeting_detected,
+            commands::cmd_meeting_detected_choice,
             commands::cmd_start_voice,
             commands::cmd_stop_voice,
             commands::cmd_voice_status,
@@ -3382,6 +3398,34 @@ mod tray_activity_tests {
         assert!(
             !prompt_html.contains("getCurrentWebviewWindow().close()"),
             "direct JS WebView close can crash WebKit during prompt frame updates"
+        );
+    }
+
+    #[test]
+    fn ac_2_16_destroyed_handler_releases_the_meeting_detected_card() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let main_rs = std::fs::read_to_string(format!("{}/src/main.rs", manifest))
+            .expect("failed to read main.rs");
+
+        assert!(
+            main_rs.contains(
+                "tauri::WindowEvent::Destroyed if window.label() == commands::MEETING_DETECTED_LABEL"
+            ),
+            "every close path of the card must run through the Destroyed handler"
+        );
+        assert!(
+            main_rs.contains("commands::on_meeting_detected_destroyed"),
+            "the Destroyed handler must release the card slot"
+        );
+        assert!(
+            main_rs.contains("commands::cmd_get_meeting_detected")
+                && main_rs.contains("commands::cmd_close_meeting_detected")
+                && main_rs.contains("commands::cmd_meeting_detected_choice"),
+            "the three card commands must be registered with Tauri"
+        );
+        assert!(
+            main_rs.contains(".skip_initial_state(commands::MEETING_DETECTED_LABEL)"),
+            "the card must not persist window state"
         );
     }
 

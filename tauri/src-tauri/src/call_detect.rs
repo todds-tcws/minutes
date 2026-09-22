@@ -614,31 +614,17 @@ impl CallDetector {
                                     }),
                                 );
 
-                                // Repeat the system prompt while recording is still
-                                // off. A logged "reminder" that never reaches the
-                                // user is worse than a little notification noise.
-                                if !is_reminder || !recording_active {
-                                    let body = if is_reminder {
-                                        "Recording is still off. Open Minutes to start recording."
-                                    } else {
-                                        "Open Minutes to start recording"
-                                    };
-                                    crate::commands::show_user_notification(
-                                        &app,
-                                        &format!("{} call detected", display_name),
-                                        body,
-                                    );
-                                }
-
-                                app.emit(
-                                    "call:detected",
+                                // Everything the user sees is decided in one
+                                // place now: suppression rules, the floating
+                                // card, and the notification fallback.
+                                crate::commands::on_call_detected(
+                                    &app,
                                     CallDetectedPayload {
                                         app_name: display_name,
                                         process_name,
                                         is_reminder,
                                     },
-                                )
-                                .ok();
+                                );
                             }
                         }
                     }
@@ -802,6 +788,9 @@ impl CallDetector {
             },
         )
         .ok();
+        // The call is over: forget its "Not now" and take down a card that
+        // is still asking about it.
+        crate::commands::on_call_ended(app, display_name);
 
         let app_for_thread = app.clone();
         let cancel = auto_stop.countdown_cancel.clone();

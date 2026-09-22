@@ -101,6 +101,14 @@ pub struct AppState {
     /// second prompt fires before the first overlay's JS has consumed its
     /// payload — see `show_meeting_prompt` in main.rs.
     pub pending_meeting_prompts: Arc<Mutex<HashMap<u64, MeetingPromptData>>>,
+    /// Suppression state for the meeting-detected card: apps dismissed for
+    /// the current call, and whether a card is on screen.
+    pub call_prompt: Arc<Mutex<minutes_core::call_prompt::CallPromptState>>,
+    /// The card currently staged or on screen, keyed by the token its page
+    /// reads from `?t=`. Also the backend's memory of which app the card is
+    /// asking about, since `cmd_meeting_detected_choice` carries only a
+    /// choice. Cleared when the window is destroyed.
+    pub meeting_detected_card: Arc<Mutex<Option<(u64, CardPayload)>>>,
     /// `true` iff the currently-active recording was started by a user click
     /// on the call detection banner. Scopes `stop_when_call_ends` so manual
     /// `cmd_start_recording` sessions are never auto-stopped.
@@ -14387,6 +14395,8 @@ mod tests {
             palette_lifecycle: Arc::new(Mutex::new(PaletteLifecycle::default())),
             palette_reopen_pending: Arc::new(AtomicBool::new(false)),
             pending_meeting_prompts: Arc::new(Mutex::new(HashMap::new())),
+            call_prompt: Arc::new(Mutex::new(Default::default())),
+            meeting_detected_card: Arc::new(Mutex::new(None)),
             recording_started_by_call_detect: Arc::new(AtomicBool::new(false)),
             call_end_countdown_cancel: Arc::new(AtomicBool::new(false)),
             call_end_countdown_active: Arc::new(AtomicBool::new(false)),
@@ -20660,6 +20670,435 @@ pub(crate) fn show_recording_hud(app: &tauri::AppHandle) {
     }
 }
 
+// ── Meeting-detected card (floating "In a meeting?" prompt) ─────
+
+/// Window label of the floating card. One at a time: `CallPromptState`
+/// owns the slot, the `Destroyed` handler in `main.rs` releases it.
+pub const MEETING_DETECTED_LABEL: &str = "meeting-detected";
+/// Logical size the card is built at (also the per-label scaling base).
+pub const MEETING_DETECTED_SIZE: (f64, f64) = (360.0, 156.0);
+/// Gap from the top and right edges of the work area.
+const MEETING_DETECTED_INSET: i32 = 16;
+/// How long the card waits for a calendar title before showing none.
+const CALENDAR_TITLE_BUDGET: Duration = Duration::from_millis(1500);
+/// Length of the "1 hour" snooze.
+const SNOOZE_MINUTES: i64 = 60;
+
+/// What the card renders. Staged by token and drained by the page, same
+/// pattern as `meeting-prompt`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardPayload {
+    pub app_name: String,
+    pub process_name: String,
+}
+
+/// Where a detection ends up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetectionAction {
+    /// Suppressed, a reminder while the card is on, or a live recording.
+    Nothing,
+    /// The OS notification, i.e. the pre-card behavior.
+    Notify,
+    /// The floating card.
+    ShowCard,
+}
+
+/// Which surface actually reached the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Surface {
+    Card,
+    Notification,
+}
+
+/// What a card button does besides closing the card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChoiceEffect {
+    /// Record: the page already started the recording.
+    CloseOnly,
+    /// Not now / "Not for this call".
+    ThisCall,
+    /// "1 hour".
+    SnoozeHour,
+    /// "Never for <app>".
+    Ignore,
+}
+
+/// Route a detection. Order matters: a live recording is silent, then the
+/// suppression rules, then the card toggle, and only a non-reminder gets a
+/// card (reminders are what the snooze rules replace).
+pub(crate) fn detection_action(
+    recording: bool,
+    is_reminder: bool,
+    prompt_card_on: bool,
+    decision: minutes_core::call_prompt::Decision,
+) -> DetectionAction {
+    if recording || decision != minutes_core::call_prompt::Decision::Prompt {
+        return DetectionAction::Nothing;
+    }
+    if !prompt_card_on {
+        return DetectionAction::Notify;
+    }
+    if is_reminder {
+        return DetectionAction::Nothing;
+    }
+    DetectionAction::ShowCard
+}
+
+/// The surface a detection reached: the card only when it was asked for and
+/// the window actually opened.
+pub(crate) fn call_prompt_surface(
+    prompt_card_on: bool,
+    card_result: Option<Result<(), String>>,
+) -> Surface {
+    match (prompt_card_on, card_result) {
+        (true, Some(Ok(()))) => Surface::Card,
+        _ => Surface::Notification,
+    }
+}
+
+/// Map the renderer's choice string. `None` for anything unrecognized — the
+/// card is the only caller, but the command is a trust boundary.
+pub(crate) fn choice_effect(choice: &str) -> Option<ChoiceEffect> {
+    match choice {
+        "record" => Some(ChoiceEffect::CloseOnly),
+        "not_now" | "snooze_call" => Some(ChoiceEffect::ThisCall),
+        "snooze_hour" => Some(ChoiceEffect::SnoozeHour),
+        "never" => Some(ChoiceEffect::Ignore),
+        _ => None,
+    }
+}
+
+/// Whether a `call:ended` for `ended_app` should take the card down.
+pub(crate) fn call_ended_closes_card(card_app: Option<&str>, ended_app: &str) -> bool {
+    card_app == Some(ended_app)
+}
+
+/// Add `app_name` to the ignored list. `false` when it was already there, so
+/// the caller can skip the config write.
+pub(crate) fn append_ignored_app(apps: &mut Vec<String>, app_name: &str) -> bool {
+    if apps.iter().any(|app| app == app_name) {
+        return false;
+    }
+    apps.push(app_name.to_string());
+    true
+}
+
+/// Snooze `app_name` for an hour in the ledger at `path`.
+pub(crate) fn snooze_hour_in(
+    path: &Path,
+    app_name: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> std::io::Result<()> {
+    let mut ledger = minutes_core::call_prompt::SnoozeLedger::load_from(path, now);
+    ledger.snooze(app_name, now + chrono::Duration::minutes(SNOOZE_MINUTES));
+    ledger.save_to(path, now)
+}
+
+/// Build the card payload and kick off the calendar lookup on its own
+/// thread. Returns immediately: the window must be on screen before anything
+/// waits on the calendar, which on a cold EventKit call can take seconds.
+pub(crate) fn prepare_card<F>(
+    app_name: &str,
+    process_name: &str,
+    calendar: F,
+) -> (CardPayload, std::sync::mpsc::Receiver<Option<String>>)
+where
+    F: FnOnce() -> Vec<minutes_core::calendar::CalendarEvent> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // `min_by_key` keeps the first of equal keys, which is the tie rule.
+        let title = calendar()
+            .into_iter()
+            .min_by_key(|event| event.minutes_until)
+            .map(|event| event.title);
+        tx.send(title).ok();
+    });
+    (
+        CardPayload {
+            app_name: app_name.to_string(),
+            process_name: process_name.to_string(),
+        },
+        rx,
+    )
+}
+
+/// Wait out the calendar budget. A slow lookup, an empty calendar and a
+/// panicking lookup (sender dropped) all mean "no title row".
+pub(crate) fn await_calendar_title(
+    rx: &std::sync::mpsc::Receiver<Option<String>>,
+) -> Option<String> {
+    rx.recv_timeout(CALENDAR_TITLE_BUDGET).ok().flatten()
+}
+
+/// Top-right corner of `work_area`, inset by `inset` on both edges.
+pub(crate) fn top_right_in(
+    work_area: (i32, i32, i32, i32),
+    card: (i32, i32),
+    inset: i32,
+) -> (i32, i32) {
+    let (work_x, work_y, work_width, _work_height) = work_area;
+    let (card_width, _card_height) = card;
+    (work_x + work_width - card_width - inset, work_y + inset)
+}
+
+/// Card position on the monitor the cursor is on, primary as the fallback.
+fn meeting_detected_position(app: &tauri::AppHandle) -> (f64, f64) {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|point| app.monitor_from_point(point.x, point.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let work_area = monitor
+        .map(|monitor| {
+            let scale = monitor.scale_factor();
+            let area = monitor.work_area();
+            (
+                (area.position.x as f64 / scale).round() as i32,
+                (area.position.y as f64 / scale).round() as i32,
+                (area.size.width as f64 / scale).round() as i32,
+                (area.size.height as f64 / scale).round() as i32,
+            )
+        })
+        // ponytail: a 1440x900 desk is the same fallback the recording pill
+        // uses when no monitor answers.
+        .unwrap_or((0, 0, 1440, 900));
+    let (x, y) = top_right_in(
+        work_area,
+        (
+            MEETING_DETECTED_SIZE.0 as i32,
+            MEETING_DETECTED_SIZE.1 as i32,
+        ),
+        MEETING_DETECTED_INSET,
+    );
+    (x as f64, y as f64)
+}
+
+fn call_prompt_state(
+    state: &AppState,
+) -> std::sync::MutexGuard<'_, minutes_core::call_prompt::CallPromptState> {
+    state
+        .call_prompt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn staged_card(state: &AppState) -> std::sync::MutexGuard<'_, Option<(u64, CardPayload)>> {
+    state
+        .meeting_detected_card
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The app the card on screen is asking about, if any.
+fn card_app_name(state: &AppState) -> Option<String> {
+    staged_card(state)
+        .as_ref()
+        .map(|(_, payload)| payload.app_name.clone())
+}
+
+/// Create the card window. The payload stays staged for as long as the card
+/// lives: `cmd_meeting_detected_choice` carries only the choice, so the
+/// backend has to remember which app it is about. Cleared on `Destroyed`.
+pub(crate) fn show_meeting_detected_card(
+    app: &tauri::AppHandle,
+    payload: CardPayload,
+) -> Result<(), String> {
+    use tauri::WebviewUrl;
+
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "AppState missing".to_string())?;
+
+    static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let token = TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    *staged_card(&state) = Some((token, payload));
+
+    let (x, y) = meeting_detected_position(app);
+    let config = Config::load();
+    let url = format!("meeting-detected.html?t={}", token);
+    match tauri::WebviewWindowBuilder::new(app, MEETING_DETECTED_LABEL, WebviewUrl::App(url.into()))
+        .title(minutes_core::i18n::tr("In a meeting?"))
+        .inner_size(MEETING_DETECTED_SIZE.0, MEETING_DETECTED_SIZE.1)
+        .position(x, y)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .content_protected(config.privacy.hide_from_screen_share)
+        .always_on_top(true)
+        .focused(false)
+        .focusable(false)
+        .skip_taskbar(true)
+        .build()
+    {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // No window, so no JS will ever drain the payload.
+            *staged_card(&state) = None;
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Close the card if one is open. Idempotent: two timers racing to dismiss
+/// the same card is the normal case (AC-2.7).
+fn close_meeting_detected_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(MEETING_DETECTED_LABEL) {
+        win.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Every detection lands here: suppression, the one-card guard, the "already
+/// recording" rule and the surface choice. Replaces the unconditional
+/// notification + `call:detected` emit the detector used to do itself.
+pub fn on_call_detected(app: &tauri::AppHandle, payload: crate::call_detect::CallDetectedPayload) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+
+    // A card on screen owns the moment: no replacement, no queue, no
+    // notification behind it.
+    if call_prompt_state(&state).is_card_open() {
+        return;
+    }
+
+    let config = Config::load();
+    let now = chrono::Utc::now();
+    let decision = minutes_core::call_prompt::decide(
+        &payload.app_name,
+        now,
+        &config.call_detection.ignored_apps,
+        &minutes_core::call_prompt::SnoozeLedger::load(now),
+        call_prompt_state(&state).this_call(),
+    );
+
+    match detection_action(
+        state.recording.load(Ordering::Relaxed),
+        payload.is_reminder,
+        config.call_detection.prompt_card,
+        decision,
+    ) {
+        DetectionAction::Nothing => {}
+        DetectionAction::Notify => notify_call_detected(app, &payload),
+        DetectionAction::ShowCard => {
+            if !call_prompt_state(&state).try_open_card() {
+                return;
+            }
+            let (card, calendar) = prepare_card(&payload.app_name, &payload.process_name, || {
+                minutes_core::calendar::events_overlapping(chrono::Local::now())
+            });
+            let built = show_meeting_detected_card(app, card);
+            if built.is_err() {
+                call_prompt_state(&state).card_closed();
+            }
+            match call_prompt_surface(true, Some(built)) {
+                Surface::Card => {
+                    // The 1500 ms wait happens off the detector's poll thread.
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let Some(title) = await_calendar_title(&calendar) else {
+                            return;
+                        };
+                        if let Some(win) = app.get_webview_window(MEETING_DETECTED_LABEL) {
+                            win.emit(
+                                "meeting-detected:calendar",
+                                serde_json::json!({ "title": title }),
+                            )
+                            .ok();
+                        }
+                    });
+                }
+                Surface::Notification => notify_call_detected(app, &payload),
+            }
+        }
+    }
+}
+
+/// The pre-card surface, unchanged: one notification per detection.
+fn notify_call_detected(app: &tauri::AppHandle, payload: &crate::call_detect::CallDetectedPayload) {
+    let body = if payload.is_reminder {
+        "Recording is still off. Open Minutes to start recording."
+    } else {
+        "Open Minutes to start recording"
+    };
+    show_user_notification(app, &format!("{} call detected", payload.app_name), body);
+}
+
+/// The call ended: forget its "Not now", and take down a card that is still
+/// asking about it (without recording a dismissal the user never made).
+pub fn on_call_ended(app: &tauri::AppHandle, app_name: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    call_prompt_state(&state).call_ended(app_name);
+    if call_ended_closes_card(card_app_name(&state).as_deref(), app_name) {
+        close_meeting_detected_window(app).ok();
+    }
+}
+
+/// Release the card slot. Called from the `Destroyed` handler in `main.rs`,
+/// so it covers a choice, the auto-dismiss, an external recording start, the
+/// settings toggle, an OS close and a webview crash alike.
+pub fn on_meeting_detected_destroyed(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    call_prompt_state(&state).card_closed();
+    *staged_card(&state) = None;
+}
+
+/// The card's payload, for the token it was opened with.
+#[tauri::command]
+pub fn cmd_get_meeting_detected(
+    token: u64,
+    state: tauri::State<'_, AppState>,
+) -> Option<CardPayload> {
+    staged_card(&state)
+        .as_ref()
+        .filter(|(staged, _)| *staged == token)
+        .map(|(_, payload)| payload.clone())
+}
+
+#[tauri::command]
+pub fn cmd_close_meeting_detected(app: tauri::AppHandle) -> Result<(), String> {
+    close_meeting_detected_window(&app)
+}
+
+/// Apply a card button, then close the card.
+#[tauri::command]
+pub fn cmd_meeting_detected_choice(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    choice: String,
+) -> Result<(), String> {
+    let effect = choice_effect(&choice).ok_or_else(|| format!("unknown choice: {}", choice))?;
+    let app_name = card_app_name(&state);
+
+    if let Some(app_name) = app_name.filter(|name| !name.is_empty()) {
+        match effect {
+            ChoiceEffect::CloseOnly => {}
+            ChoiceEffect::ThisCall => call_prompt_state(&state).dismiss_this_call(&app_name),
+            ChoiceEffect::SnoozeHour => snooze_hour_in(
+                &minutes_core::call_prompt::ledger_path(),
+                &app_name,
+                chrono::Utc::now(),
+            )
+            .map_err(|e| e.to_string())?,
+            ChoiceEffect::Ignore => {
+                let mut config = Config::load();
+                if append_ignored_app(&mut config.call_detection.ignored_apps, &app_name) {
+                    config.save().map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    close_meeting_detected_window(&app)
+}
+
 fn set_recording_pause(app: &tauri::AppHandle, paused: bool) -> Result<serde_json::Value, String> {
     // Read before flipping so the resume note can say how long the gap was.
     let ledger = minutes_core::notes::read_pause_ledger();
@@ -24719,5 +25158,285 @@ mod output_dir_tests {
         assert!(path_is_within(root, root));
         assert!(!path_is_within(Path::new("/Users/x/meetings-2"), root));
         assert!(!path_is_within(Path::new("/Users/x"), root));
+    }
+}
+
+#[cfg(test)]
+mod meeting_detected_tests {
+    use super::*;
+    use minutes_core::calendar::CalendarEvent;
+    use minutes_core::call_prompt::{CallPromptState, Decision, SuppressReason};
+
+    fn event(title: &str, minutes_until: i64) -> CalendarEvent {
+        CalendarEvent {
+            title: title.to_string(),
+            start: format!("start+{minutes_until}"),
+            minutes_until,
+            attendees: vec![],
+            url: None,
+        }
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-22T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    // ── AC-2.3: the card is built before the calendar lookup ──
+
+    #[test]
+    fn ac_2_3_prepare_card_does_not_wait_for_the_calendar_lookup() {
+        let started = Instant::now();
+        let (payload, _rx) = prepare_card("Microsoft Teams", "Teams", || {
+            std::thread::sleep(Duration::from_secs(3));
+            vec![event("Standup", 0)]
+        });
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "prepare_card blocked for {:?}",
+            started.elapsed()
+        );
+        assert_eq!(payload.app_name, "Microsoft Teams");
+        assert_eq!(payload.process_name, "Teams");
+    }
+
+    // ── AC-2.4: top-right of the work area ───────────────────
+
+    #[test]
+    fn ac_2_4_top_right_in_primary_monitor() {
+        assert_eq!(
+            top_right_in((0, 25, 1440, 875), (360, 156), 16),
+            (1440 - 360 - 16, 25 + 16)
+        );
+    }
+
+    #[test]
+    fn ac_2_4_top_right_in_secondary_monitor_with_non_zero_origin() {
+        assert_eq!(
+            top_right_in((1440, -180, 1920, 1080), (360, 156), 16),
+            (1440 + 1920 - 360 - 16, -180 + 16)
+        );
+    }
+
+    // ── AC-2.5: calendar title within a 1500 ms budget ───────
+
+    #[test]
+    fn ac_2_5_slow_lookup_yields_no_title() {
+        let (_payload, rx) = prepare_card("Slack", "Slack", || {
+            std::thread::sleep(Duration::from_secs(3));
+            vec![event("Standup", 0)]
+        });
+        let started = Instant::now();
+        assert_eq!(await_calendar_title(&rx), None);
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "waited {:?}, budget is 1500 ms",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn ac_2_5_earliest_start_event_wins() {
+        let (_payload, rx) = prepare_card("Slack", "Slack", || {
+            vec![event("Later", 5), event("Earliest", -10), event("Tie", -10)]
+        });
+        assert_eq!(await_calendar_title(&rx), Some("Earliest".to_string()));
+    }
+
+    #[test]
+    fn ac_2_5_first_in_vec_order_wins_a_tie() {
+        let (_payload, rx) = prepare_card("Slack", "Slack", || {
+            vec![event("First", -10), event("Second", -10)]
+        });
+        assert_eq!(await_calendar_title(&rx), Some("First".to_string()));
+    }
+
+    #[test]
+    fn ac_2_5_no_overlapping_events_yields_no_title() {
+        let (_payload, rx) = prepare_card("Slack", "Slack", Vec::new);
+        assert_eq!(await_calendar_title(&rx), None);
+    }
+
+    #[test]
+    fn ac_2_5_panicking_lookup_is_treated_as_empty() {
+        let (_payload, rx) = prepare_card("Slack", "Slack", || panic!("calendar exploded"));
+        assert_eq!(await_calendar_title(&rx), None);
+    }
+
+    // ── AC-2.7: Record closes the card, nothing else ─────────
+
+    #[test]
+    fn ac_2_7_record_choice_only_closes_the_card() {
+        assert_eq!(choice_effect("record"), Some(ChoiceEffect::CloseOnly));
+    }
+
+    #[test]
+    fn ac_2_7_unknown_choice_is_rejected() {
+        assert_eq!(choice_effect("sudo_record"), None);
+        assert_eq!(choice_effect(""), None);
+    }
+
+    // ── AC-2.8: "this call" add / remove and call:ended ──────
+
+    #[test]
+    fn ac_2_8_not_now_adds_this_call_and_call_ended_removes_it() {
+        assert_eq!(choice_effect("not_now"), Some(ChoiceEffect::ThisCall));
+
+        let mut state = CallPromptState::default();
+        state.dismiss_this_call("Slack");
+        assert_eq!(
+            minutes_core::call_prompt::decide(
+                "Slack",
+                now(),
+                &[],
+                &Default::default(),
+                state.this_call()
+            ),
+            Decision::Suppressed(SuppressReason::ThisCall)
+        );
+
+        state.call_ended("Slack");
+        assert_eq!(
+            minutes_core::call_prompt::decide(
+                "Slack",
+                now(),
+                &[],
+                &Default::default(),
+                state.this_call()
+            ),
+            Decision::Prompt
+        );
+    }
+
+    #[test]
+    fn ac_2_8_call_ended_closes_only_the_card_for_that_app() {
+        assert!(call_ended_closes_card(Some("Slack"), "Slack"));
+        assert!(!call_ended_closes_card(Some("Slack"), "Microsoft Teams"));
+        assert!(!call_ended_closes_card(None, "Slack"));
+    }
+
+    // ── AC-2.9: the three snooze items ───────────────────────
+
+    #[test]
+    fn ac_2_9_snooze_menu_choices_map_to_their_effects() {
+        assert_eq!(choice_effect("snooze_call"), Some(ChoiceEffect::ThisCall));
+        assert_eq!(choice_effect("snooze_hour"), Some(ChoiceEffect::SnoozeHour));
+        assert_eq!(choice_effect("never"), Some(ChoiceEffect::Ignore));
+    }
+
+    #[test]
+    fn ac_2_9_snooze_hour_writes_an_hour_long_ledger_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("call-prompt-snooze.json");
+        snooze_hour_in(&path, "Slack", now()).unwrap();
+
+        let ledger = minutes_core::call_prompt::SnoozeLedger::load_from(&path, now());
+        assert!(ledger.is_snoozed("Slack", now() + chrono::Duration::minutes(59)));
+        assert!(!ledger.is_snoozed("Slack", now() + chrono::Duration::minutes(61)));
+    }
+
+    #[test]
+    fn ac_2_9_never_appends_the_app_once() {
+        let mut apps = vec!["Zoom".to_string()];
+        assert!(append_ignored_app(&mut apps, "Slack"));
+        assert_eq!(apps, vec!["Zoom".to_string(), "Slack".to_string()]);
+        assert!(
+            !append_ignored_app(&mut apps, "Slack"),
+            "already ignored: no second entry, no config write"
+        );
+        assert_eq!(apps, vec!["Zoom".to_string(), "Slack".to_string()]);
+    }
+
+    // ── AC-2.12: which surface the detection reaches ─────────
+
+    #[test]
+    fn ac_2_12_card_on_and_built_is_the_card() {
+        assert_eq!(call_prompt_surface(true, Some(Ok(()))), Surface::Card);
+    }
+
+    #[test]
+    fn ac_2_12_card_on_but_failed_falls_back_to_the_notification() {
+        assert_eq!(
+            call_prompt_surface(true, Some(Err("no window".to_string()))),
+            Surface::Notification
+        );
+    }
+
+    #[test]
+    fn ac_2_12_card_off_is_the_notification() {
+        assert_eq!(call_prompt_surface(false, None), Surface::Notification);
+        assert_eq!(
+            call_prompt_surface(false, Some(Ok(()))),
+            Surface::Notification
+        );
+    }
+
+    #[test]
+    fn ac_2_12_card_off_notifies_for_detections_and_reminders_alike() {
+        assert_eq!(
+            detection_action(false, false, false, Decision::Prompt),
+            DetectionAction::Notify
+        );
+        assert_eq!(
+            detection_action(false, true, false, Decision::Prompt),
+            DetectionAction::Notify
+        );
+    }
+
+    #[test]
+    fn ac_2_12_card_on_stays_silent_for_reminders() {
+        assert_eq!(
+            detection_action(false, true, true, Decision::Prompt),
+            DetectionAction::Nothing
+        );
+        assert_eq!(
+            detection_action(false, false, true, Decision::Prompt),
+            DetectionAction::ShowCard
+        );
+    }
+
+    #[test]
+    fn ac_2_12_a_suppressed_decision_reaches_no_surface() {
+        for suppressed in [
+            SuppressReason::Ignored,
+            SuppressReason::Snoozed,
+            SuppressReason::ThisCall,
+        ] {
+            assert_eq!(
+                detection_action(false, false, false, Decision::Suppressed(suppressed)),
+                DetectionAction::Nothing
+            );
+            assert_eq!(
+                detection_action(false, false, true, Decision::Suppressed(suppressed)),
+                DetectionAction::Nothing
+            );
+        }
+    }
+
+    // ── AC-2.16: the card slot is released on destroy ────────
+
+    #[test]
+    fn ac_2_16_card_closed_releases_the_slot() {
+        let mut state = CallPromptState::default();
+        assert!(state.try_open_card());
+        assert!(!state.try_open_card());
+        state.card_closed();
+        assert!(state.try_open_card(), "the next detection prompts again");
+    }
+
+    // ── AC-2.18: silent while recording ──────────────────────
+
+    #[test]
+    fn ac_2_18_detection_while_recording_does_nothing() {
+        for is_reminder in [false, true] {
+            for prompt_card in [false, true] {
+                assert_eq!(
+                    detection_action(true, is_reminder, prompt_card, Decision::Prompt),
+                    DetectionAction::Nothing,
+                    "reminder={is_reminder} prompt_card={prompt_card}"
+                );
+            }
+        }
     }
 }
