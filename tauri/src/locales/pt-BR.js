@@ -39,6 +39,7 @@ window.__MINUTES_I18N['pt-BR'] = {
     // "Not now" already has a catalog entry below (Coach setup dismiss).
     "In a meeting?": "Em uma reunião?",
     "Snooze": "Adiar",
+    "Recording stays on this Mac": "A gravação fica neste Mac",
     "Not for this call": "Não nesta chamada",
     "1 hour": "1 hora",
     "Never for {app}": "Nunca para {app}",

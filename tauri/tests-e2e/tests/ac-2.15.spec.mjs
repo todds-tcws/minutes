@@ -18,6 +18,7 @@ const KEYS = [
   'Not for this call',
   '1 hour',
   'Never for {app}',
+  'Recording stays on this Mac',
   // Settings strings
   'Ask with a floating prompt',
   'Ignored apps',

@@ -8,6 +8,7 @@ import { callCount, callLog, queueInvoke, reject } from '../helpers/tauri-stub.m
 test('Not now click invokes cmd_meeting_detected_choice with "not_now"', async ({ page }) => {
   await openMeetingDetected(page, { payload: meetingDetectedPayload() });
 
+  await page.locator('#snooze-btn').click();
   await page.locator('#not-now-btn').click();
 
   await expect.poll(() => callCount(page, 'cmd_meeting_detected_choice')).toBe(1);
@@ -44,6 +45,7 @@ test('a rejected cmd_meeting_detected_choice still closes the card via cmd_close
   await openMeetingDetected(page, { payload: meetingDetectedPayload() });
   await queueInvoke(page, 'cmd_meeting_detected_choice', [reject('ledger write failed')]);
 
+  await page.locator('#snooze-btn').click();
   await page.locator('#not-now-btn').click();
 
   await expect.poll(() => callCount(page, 'cmd_close_meeting_detected')).toBe(1);

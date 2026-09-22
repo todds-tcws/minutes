@@ -39,6 +39,7 @@ window.__MINUTES_I18N['zh-CN'] = {
     "In a meeting?": "正在开会吗？",
     "Not now": "暂不",
     "Snooze": "稍后提醒",
+    "Recording stays on this Mac": "录音只保存在这台 Mac 上",
     "Not for this call": "本次通话不再提示",
     "1 hour": "1 小时",
     "Never for {app}": "始终不为 {app} 提示",

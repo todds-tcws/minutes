@@ -20735,7 +20735,9 @@ pub(crate) fn show_recording_hud(app: &tauri::AppHandle) {
 /// owns the slot, the `Destroyed` handler in `main.rs` releases it.
 pub const MEETING_DETECTED_LABEL: &str = "meeting-detected";
 /// Logical size the card is built at (also the per-label scaling base).
-pub const MEETING_DETECTED_SIZE: (f64, f64) = (360.0, 156.0);
+/// Rest size of the one-row card; the page grows the window to 224 tall
+/// while its chevron menu is open.
+pub const MEETING_DETECTED_SIZE: (f64, f64) = (420.0, 64.0);
 /// Gap from the top and right edges of the work area.
 const MEETING_DETECTED_INSET: i32 = 16;
 /// How long the card waits for a calendar title before showing none.

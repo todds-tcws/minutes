@@ -1,16 +1,19 @@
-// AC-2.9: the snooze control opens a menu with exactly three items, and each
-// fires its matching cmd_meeting_detected_choice value.
+// AC-2.9: the chevron opens a menu holding Not now plus exactly three snooze
+// items, and each snooze item fires its matching cmd_meeting_detected_choice.
 import { test, expect } from '@playwright/test';
 import { openMeetingDetected, meetingDetectedPayload } from '../helpers/page.mjs';
 import { callLog } from '../helpers/tauri-stub.mjs';
 
-test('the snooze control opens a menu with exactly three items', async ({ page }) => {
+test('the chevron opens a menu with Not now and exactly three snooze items', async ({ page }) => {
   await openMeetingDetected(page, { payload: meetingDetectedPayload({ appName: 'Slack' }) });
 
   await expect(page.locator('#actions-menu')).toBeHidden();
   await page.locator('#snooze-btn').click();
   await expect(page.locator('#actions-menu')).toBeVisible();
-  await expect(page.locator('#actions-menu [role="menuitem"]')).toHaveCount(3);
+  await expect(page.locator('#actions-menu [role="menuitem"]')).toHaveCount(4);
+  await expect(page.locator('#actions-menu [role="menuitem"]').first()).toHaveId('not-now-btn');
+  await expect(page.locator('#not-now-btn')).toHaveText('Not now');
+  await expect(page.locator('#snooze-btn')).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('#menu-not-for-call')).toHaveText('Not for this call');
   await expect(page.locator('#menu-hour')).toHaveText('1 hour');
   await expect(page.locator('#menu-never')).toHaveText('Never for Slack');
@@ -34,17 +37,17 @@ for (const { id, choice } of items) {
   });
 }
 
-test('the snooze menu fits inside the fixed 360x156 card even with a calendar title, by hiding the title row while open', async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 156 });
+test('the open menu fits inside the 420x224 expanded window with a calendar title', async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 224 });
   await openMeetingDetected(page, { payload: meetingDetectedPayload({ calendarTitle: 'Weekly sync' }) });
 
   await expect(page.locator('#title-row')).toBeVisible();
-
   await page.locator('#snooze-btn').click();
   await expect(page.locator('#actions-menu')).toBeVisible();
-  await expect(page.locator('#title-row')).toBeHidden();
 
-  const overflowed = await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight);
+  const overflowed = await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight || document.documentElement.scrollWidth > window.innerWidth);
   expect(overflowed).toBe(false);
-  await expect(page.locator('#menu-never')).toBeInViewport();
+  for (const id of ['#not-now-btn', '#menu-not-for-call', '#menu-hour', '#menu-never']) {
+    await expect(page.locator(id)).toBeInViewport();
+  }
 });
