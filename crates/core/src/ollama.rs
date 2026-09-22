@@ -98,6 +98,12 @@ pub enum OllamaError {
     EmptyResponse,
 }
 
+/// Every request refreshes Ollama's unload timer. The server default is 5m,
+/// which unloads the model during a quiet stretch of a meeting and makes the
+/// next nudge pay the cold-load cost against the fast-lane budget.
+const MODEL_KEEP_ALIVE: &str = "30m";
+const COLD_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[derive(Debug, Clone)]
 pub struct OllamaAdapter {
     base_url: String,
@@ -123,9 +129,13 @@ impl OllamaAdapter {
     }
 
     fn agent(&self) -> ureq::Agent {
+        self.agent_with_timeout(self.timeout)
+    }
+
+    fn agent_with_timeout(&self, timeout: Duration) -> ureq::Agent {
         ureq::Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(Some(self.timeout))
+                .timeout_global(Some(timeout))
                 .http_status_as_error(false)
                 .build(),
         )
@@ -161,10 +171,12 @@ impl OllamaAdapter {
             "model": self.model,
             "prompt": "",
             "stream": false,
-            "keep_alive": "10m"
+            "keep_alive": MODEL_KEEP_ALIVE
         });
+        // A cold load of a 4B model can take 30s+ on a busy 16 GB Mac; that is
+        // a one-time cost and must not be judged by the per-nudge latency budget.
         let mut response = self
-            .agent()
+            .agent_with_timeout(self.timeout.max(COLD_LOAD_TIMEOUT))
             .post(&url)
             .header("Content-Type", "application/json")
             .send_json(&body)
@@ -197,6 +209,7 @@ impl OllamaAdapter {
             "model": self.model,
             "messages": request.messages,
             "stream": true,
+            "keep_alive": MODEL_KEEP_ALIVE,
         });
         if let Some(format) = &request.format {
             body["format"] = format.clone();
