@@ -316,6 +316,53 @@ mod tests {
         assert!(reloaded.is_snoozed("Zoom", now()));
     }
 
+    #[test]
+    fn ac_2_2_entry_expiring_exactly_now_is_dropped_on_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("call-prompt-snooze.json");
+        std::fs::write(&path, r#"{"Slack":"2026-09-22T12:00:00Z"}"#).unwrap();
+        assert_eq!(
+            SnoozeLedger::load_from(&path, now()),
+            SnoozeLedger::default(),
+            "until == now is expired on read"
+        );
+
+        let mut ledger = SnoozeLedger::default();
+        ledger.snooze("Slack", now());
+        ledger.save_to(&path, now()).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("Slack"),
+            "until == now is expired on write: {written}"
+        );
+    }
+
+    #[test]
+    fn ac_2_2_decide_before_at_and_after_expiry() {
+        // One ledger, three clocks: the snooze must stop suppressing the
+        // instant it expires, not one read later.
+        let expiry = now() + Duration::minutes(60);
+        let mut ledger = SnoozeLedger::default();
+        ledger.snooze("Slack", expiry);
+
+        let empty = HashSet::new();
+        assert_eq!(
+            decide("Slack", expiry - Duration::seconds(1), &[], &ledger, &empty),
+            Decision::Suppressed(SuppressReason::Snoozed),
+            "before expiry"
+        );
+        assert_eq!(
+            decide("Slack", expiry, &[], &ledger, &empty),
+            Decision::Prompt,
+            "at expiry"
+        );
+        assert_eq!(
+            decide("Slack", expiry + Duration::seconds(1), &[], &ledger, &empty),
+            Decision::Prompt,
+            "after expiry"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn ac_2_2_write_is_owner_only() {
@@ -354,6 +401,11 @@ mod tests {
         let mut ledger = SnoozeLedger::load_from(&path, now());
         ledger.snooze("Slack", now() + Duration::minutes(60));
         ledger.save_to(&path, now()).unwrap();
+        assert_eq!(
+            decide("Microsoft Teams", now(), &[], &ledger, state.this_call()),
+            Decision::Suppressed(SuppressReason::ThisCall),
+            "suppressed before the restart"
+        );
         drop(state);
         drop(ledger);
 
