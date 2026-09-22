@@ -278,10 +278,47 @@ fn parse_calendar_access(raw: &str) -> CalendarAccess {
     }
 }
 
+/// Upcoming events from every source: the system calendar (EventKit or
+/// AppleScript on macOS) plus the configured ICS feed, deduplicated.
+pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
+    let mut events = upcoming_events_system(lookahead_minutes);
+    merge_feed_events(&mut events, crate::ics_feed::upcoming(lookahead_minutes));
+    events.sort_by_key(|e| e.minutes_until);
+    events
+}
+
+/// Events overlapping `at` from every source (see `upcoming_events`).
+pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
+    let mut events = events_overlapping_system(at);
+    merge_feed_events(&mut events, crate::ics_feed::overlapping(at));
+    events
+}
+
+/// Events overlapping now from every source (see `upcoming_events`).
+pub fn events_overlapping_now() -> Vec<CalendarEvent> {
+    let mut events = events_overlapping_now_system();
+    merge_feed_events(&mut events, crate::ics_feed::overlapping(Local::now()));
+    events
+}
+
+/// Append feed events not already present (same title and start), so a
+/// calendar that is both in Apple Calendar and published as a feed does not
+/// show every meeting twice.
+fn merge_feed_events(events: &mut Vec<CalendarEvent>, feed: Vec<CalendarEvent>) {
+    for event in feed {
+        let duplicate = events
+            .iter()
+            .any(|e| e.title == event.title && e.start == event.start);
+        if !duplicate {
+            events.push(event);
+        }
+    }
+}
+
 /// Query upcoming calendar events within the next `lookahead_minutes`.
 /// Returns events sorted by start time (all-day events excluded).
 /// On non-macOS platforms, returns an empty list (calendar integration uses AppleScript/EventKit).
-pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
+fn upcoming_events_system(lookahead_minutes: u32) -> Vec<CalendarEvent> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = lookahead_minutes;
@@ -308,7 +345,7 @@ pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
 /// Find calendar events that overlap a given time window.
 /// Used to match a recording to its calendar event after the fact.
 /// On non-macOS platforms, returns an empty list.
-pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
+fn events_overlapping_system(at: DateTime<Local>) -> Vec<CalendarEvent> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = at;
@@ -323,7 +360,7 @@ pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
         // Preserve the fast helper path for "right now" lookups, but allow
         // historical reprocessing to center the query on the recording time.
         if (Local::now() - at).num_seconds().abs() <= 60 {
-            return events_overlapping_now();
+            return events_overlapping_now_system();
         }
 
         if let Some(events) = query_overlap_via_eventkit(Some(at.timestamp())) {
@@ -334,7 +371,7 @@ pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
     }
 }
 
-pub fn events_overlapping_now() -> Vec<CalendarEvent> {
+fn events_overlapping_now_system() -> Vec<CalendarEvent> {
     #[cfg(not(target_os = "macos"))]
     {
         Vec::new()

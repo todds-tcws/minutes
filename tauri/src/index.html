@@ -7236,6 +7236,26 @@
         </div>
       </div>
 
+      <!-- Calendar feed (Outlook / ICS) -->
+      <div class="settings-section settings-section-tight">
+        <div class="about-item-title">CALENDAR FEED</div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Outlook or other ICS feed</div>
+            <div class="about-controls-meta">Paste a published calendar link (Outlook web > Settings > Calendar > Shared
+              calendars > Publish > ICS). Minutes reads it directly every 5 minutes alongside the system calendar, so
+              Outlook meetings drive reminders and titles without Apple Calendar. The link is a secret; it is stored
+              only in your local config file.</div>
+            <div class="about-controls-meta settings-compact-meta" id="settings-ics-status"></div>
+          </div>
+        </div>
+        <div class="about-controls">
+          <input type="password" id="settings-ics-url" class="settings-field" placeholder="https://…/calendar.ics" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
+          <button class="btn btn-secondary btn-sm" id="settings-ics-save">Save</button>
+          <button class="btn btn-secondary btn-sm" id="settings-ics-clear">Remove</button>
+        </div>
+      </div>
+
       <!-- Diagnostics (Readiness + Recovery moved from header) -->
       <div class="settings-section">
         <div class="about-item-title">DIAGNOSTICS</div>
@@ -12993,6 +13013,45 @@
       else if (s.summarization.engine === 'claude') el.textContent = s.summarization.anthropic_key_set ? 'API key set' : 'ANTHROPIC_API_KEY not found in environment';
       else if (s.summarization.engine === 'openai') el.textContent = s.summarization.openai_key_set ? 'API key set' : 'OPENAI_API_KEY not found in environment';
     }
+    async function loadIcsFeedStatus() {
+      try {
+        const s = await invoke('cmd_get_settings');
+        const status = document.getElementById('settings-ics-status');
+        const input = document.getElementById('settings-ics-url');
+        if (s.calendar && s.calendar.ics_url_set) {
+          status.textContent = 'Connected to ' + (s.calendar.ics_url_host || 'feed') + '. Paste a new link to replace it.';
+          input.placeholder = '•••••••• (saved)';
+        } else {
+          status.textContent = 'No feed configured.';
+          input.placeholder = 'https://…/calendar.ics';
+        }
+        input.value = '';
+      } catch (e) { console.error('loadIcsFeedStatus:', e); }
+    }
+    async function saveIcsFeed(value) {
+      const status = document.getElementById('settings-ics-status');
+      try {
+        await invoke('cmd_set_setting', { section: 'calendar', key: 'ics_url', value });
+        await loadIcsFeedStatus();
+        status.style.color = 'var(--green)';
+        status.textContent = value ? 'Saved. Outlook meetings will appear within a few minutes.' : 'Feed removed.';
+        setTimeout(loadIcsFeedStatus, 4000);
+      } catch (e) {
+        status.style.color = 'var(--red)';
+        status.textContent = String(e);
+      }
+    }
+    document.getElementById('settings-ics-save').addEventListener('click', async () => {
+      const value = document.getElementById('settings-ics-url').value.trim();
+      if (!value) return;
+      await saveIcsFeed(value);
+    });
+    document.getElementById('settings-ics-url').addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') document.getElementById('settings-ics-save').click();
+    });
+    document.getElementById('settings-ics-clear').addEventListener('click', async () => {
+      await saveIcsFeed('');
+    });
     async function loadOutputDir() {
       try {
         const s = await invoke('cmd_get_settings');
@@ -13043,6 +13102,7 @@
     });
     async function loadStorageStats() {
       loadOutputDir();
+      loadIcsFeedStatus();
       try {
         const st = await invoke('cmd_get_storage_stats');
         const f = (b) => b > 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : b > 1048576 ? (b / 1048576).toFixed(0) + ' MB' : (b / 1024).toFixed(0) + ' KB';

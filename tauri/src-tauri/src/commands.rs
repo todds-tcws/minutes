@@ -13025,6 +13025,17 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "recording_hud_anchor": config.ui.recording_hud_anchor,
         },
         "output_dir": config.output_dir.display().to_string(),
+        "calendar": {
+            "enabled": config.calendar.enabled,
+            "ics_url_set": config.calendar.ics_url.as_deref().is_some_and(|u| !u.trim().is_empty()),
+            "ics_url_host": config
+                .calendar
+                .ics_url
+                .as_deref()
+                .and_then(minutes_core::ics_feed::normalize_url)
+                .map(|u| minutes_core::ics_feed::url_host(&u))
+                .unwrap_or_default(),
+        },
     })
 }
 
@@ -13361,6 +13372,15 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
         ("ui", "recording_hud_enabled") => {
             config.ui.recording_hud_enabled = value == "true";
+        }
+        ("calendar", "ics_url") => {
+            if value.trim().is_empty() {
+                config.calendar.ics_url = None;
+            } else {
+                let normalized = minutes_core::ics_feed::normalize_url(&value)
+                    .ok_or("calendar feed URL must start with https://, http:// or webcal://")?;
+                config.calendar.ics_url = Some(normalized);
+            }
         }
         ("call_detection", "call_end_stop_countdown_secs") => {
             let parsed: u64 = value

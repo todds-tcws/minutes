@@ -516,6 +516,7 @@ For real desktop validation of the Windows and Linux collectors, use
 |---|---|---|
 | `enabled` | `true` | Read upcoming meetings from the system calendar |
 | `use_event_title_for_meeting_title` | `false` | When a recording overlaps a scheduled calendar event, use that event's title as the meeting title instead of the AI-generated one (skips the LLM title refine for that meeting) |
+| `ics_url` | unset | Published iCalendar feed (`https://` or `webcal://`) merged with the system calendar. Use it for Outlook/Exchange when the account is not in Apple Calendar (Outlook web > Settings > Calendar > Shared calendars > Publish, copy the ICS link). Refreshed every 5 minutes; recurring meetings are expanded from the feed's own rules and time zones; all-day events are ignored. Treat the URL as a secret. |
 
 ### `[ui]` — desktop app chrome
 
