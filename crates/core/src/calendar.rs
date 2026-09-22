@@ -396,7 +396,8 @@ fn events_overlapping_now_system() -> Vec<CalendarEvent> {
 /// an opted-out user never sees AppleScript launch Calendar.app.
 #[cfg(target_os = "macos")]
 fn calendar_integration_enabled() -> bool {
-    crate::config::Config::load().calendar.enabled
+    let calendar = crate::config::Config::load().calendar;
+    calendar.enabled && calendar.system_calendar
 }
 
 /// `true` when Calendar.app is currently running.

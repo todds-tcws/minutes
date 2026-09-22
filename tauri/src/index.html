@@ -7250,6 +7250,14 @@
           </div>
         </div>
         <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Also read the Mac system calendar</div>
+            <div class="about-controls-meta">Apple Calendar, iCloud, and any account added in System Settings > Internet
+              Accounts. Turn off if that calendar is personal and your work meetings come from the feed above.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-system-calendar">On</button>
+        </div>
+        <div class="about-controls">
           <input type="password" id="settings-ics-url" class="settings-field" placeholder="https://…/calendar.ics" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
           <button class="btn btn-secondary btn-sm" id="settings-ics-save">Save</button>
           <button class="btn btn-secondary btn-sm" id="settings-ics-clear">Remove</button>
@@ -13018,6 +13026,7 @@
         const s = await invoke('cmd_get_settings');
         const status = document.getElementById('settings-ics-status');
         const input = document.getElementById('settings-ics-url');
+        if (s.calendar) setSettingsToggle('settings-system-calendar', s.calendar.system_calendar !== false);
         if (s.calendar && s.calendar.ics_url_set) {
           status.textContent = 'Connected to ' + (s.calendar.ics_url_host || 'feed') + '. Paste a new link to replace it.';
           input.placeholder = '•••••••• (saved)';
@@ -13041,6 +13050,14 @@
         status.textContent = String(e);
       }
     }
+    document.getElementById('settings-system-calendar').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !(s.calendar && s.calendar.system_calendar !== false);
+      try {
+        await invoke('cmd_set_setting', { section: 'calendar', key: 'system_calendar', value: String(next) });
+        setSettingsToggle('settings-system-calendar', next);
+      } catch (e) { console.error('system calendar toggle:', e); }
+    });
     document.getElementById('settings-ics-save').addEventListener('click', async () => {
       const value = document.getElementById('settings-ics-url').value.trim();
       if (!value) return;

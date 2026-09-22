@@ -13027,6 +13027,7 @@ pub fn cmd_get_settings() -> serde_json::Value {
         "output_dir": config.output_dir.display().to_string(),
         "calendar": {
             "enabled": config.calendar.enabled,
+            "system_calendar": config.calendar.system_calendar,
             "ics_url_set": config.calendar.ics_url.as_deref().is_some_and(|u| !u.trim().is_empty()),
             "ics_url_host": config
                 .calendar
@@ -13372,6 +13373,9 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
         ("ui", "recording_hud_enabled") => {
             config.ui.recording_hud_enabled = value == "true";
+        }
+        ("calendar", "system_calendar") => {
+            config.calendar.system_calendar = value == "true";
         }
         ("calendar", "ics_url") => {
             if value.trim().is_empty() {

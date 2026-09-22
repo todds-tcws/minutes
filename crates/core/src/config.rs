@@ -840,6 +840,11 @@ pub struct CalendarConfig {
     /// event's title as the meeting title (overriding the AI-generated title).
     /// Opt-in; defaults to false to preserve existing behavior.
     pub use_event_title_for_meeting_title: bool,
+    /// Read the Mac system calendar (Apple Calendar / iCloud / Exchange via
+    /// Internet Accounts) through EventKit or AppleScript. Turn off to use
+    /// only `ics_url`, for example when the system calendar is personal and
+    /// the work calendar arrives as a feed. Default: true.
+    pub system_calendar: bool,
     /// Published iCalendar feed (`https://` or `webcal://`), read alongside
     /// the system calendar. This is how Outlook/Exchange reaches Minutes
     /// when the account is not in Apple Calendar. The URL is a secret: the
@@ -852,6 +857,7 @@ impl Default for CalendarConfig {
         Self {
             enabled: true,
             use_event_title_for_meeting_title: false,
+            system_calendar: true,
             ics_url: None,
         }
     }
