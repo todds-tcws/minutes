@@ -4,7 +4,7 @@
 // in Settings invokes cmd_close_meeting_detected immediately).
 import { test, expect } from '@playwright/test';
 import { openMeetingDetected, meetingDetectedPayload, openCallDetectionSettings, settingsFixture } from '../helpers/page.mjs';
-import { setDefault, callCount } from '../helpers/tauri-stub.mjs';
+import { setDefault, callCount, callLog } from '../helpers/tauri-stub.mjs';
 
 test('the card closes itself when cmd_capture_status reports recording true', async ({ page }) => {
   await openMeetingDetected(page, { useClock: true, payload: meetingDetectedPayload() });
@@ -44,6 +44,10 @@ test('turning "Ask with a floating prompt" off invokes cmd_close_meeting_detecte
 
   await expect(page.locator('#settings-call-detection-prompt-card')).toHaveText('Off');
   await expect.poll(() => callCount(page, 'cmd_close_meeting_detected')).toBe(1);
+
+  const log = await callLog(page, 'cmd_set_setting');
+  expect(log).toHaveLength(1);
+  expect(log[0].args).toEqual({ section: 'call_detection', key: 'prompt_card', value: 'false' });
 });
 
 test('turning "Ask with a floating prompt" on does not invoke cmd_close_meeting_detected', async ({ page }) => {
@@ -57,4 +61,8 @@ test('turning "Ask with a floating prompt" on does not invoke cmd_close_meeting_
 
   await expect(page.locator('#settings-call-detection-prompt-card')).toHaveText('On');
   expect(await callCount(page, 'cmd_close_meeting_detected')).toBe(0);
+
+  const log = await callLog(page, 'cmd_set_setting');
+  expect(log).toHaveLength(1);
+  expect(log[0].args).toEqual({ section: 'call_detection', key: 'prompt_card', value: 'true' });
 });

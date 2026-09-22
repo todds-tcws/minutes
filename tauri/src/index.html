@@ -13916,6 +13916,7 @@
           el('button', {
             class: 'btn btn-secondary btn-sm',
             text: 'Remove',
+            attrs: { 'aria-label': `Remove ${app}` },
             on: { click: () => removeIgnoredApp(app) },
           }),
         ]));
@@ -13925,7 +13926,10 @@
       try {
         const s = await invoke('cmd_get_settings');
         const next = (s.call_detection.ignored_apps || []).filter((a) => a !== app);
-        await invoke('cmd_set_setting', { section: 'call_detection', key: 'ignored_apps', value: next.join(', ') });
+        // JSON, not comma-join: app names can themselves contain commas
+        // (e.g. "Zoom, Inc"), which the comma-separated setting encoding
+        // used elsewhere (allowed_apps/emails/etc.) would corrupt.
+        await invoke('cmd_set_setting', { section: 'call_detection', key: 'ignored_apps', value: JSON.stringify(next) });
         renderIgnoredApps(next);
       } catch (e) { console.error('remove ignored app:', e); }
     }

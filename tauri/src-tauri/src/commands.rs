@@ -13385,7 +13385,12 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
             config.call_detection.prompt_card = value == "true";
         }
         ("call_detection", "ignored_apps") => {
-            config.call_detection.ignored_apps = parse_comma_separated_setting(&value);
+            // JSON array, not the comma-separated encoding used by
+            // allowed_apps/denied_apps/emails/aliases: an app name can
+            // itself contain a comma (e.g. "Zoom, Inc"), which that
+            // encoding would corrupt on round-trip.
+            config.call_detection.ignored_apps = serde_json::from_str(&value)
+                .map_err(|e| format!("invalid ignored_apps value: {}", e))?;
         }
         ("ui", "recording_hud_enabled") => {
             config.ui.recording_hud_enabled = value == "true";
@@ -16162,6 +16167,50 @@ mod tests {
                 "global_hotkey.shortcut_enabled=false did not persist"
             );
             assert_eq!(loaded.global_hotkey.shortcut, "CmdOrCtrl+Shift+T");
+        });
+    }
+
+    /// AC-2.14 settings wiring: `prompt_card` and `ignored_apps` round-trip
+    /// through the `cmd_set_setting`/`cmd_get_settings` central path against a
+    /// temp config file, including an app name containing a comma — proves
+    /// the JSON encoding (not the comma-separated encoding used by
+    /// allowed_apps/denied_apps/emails/aliases) is lossless, and that
+    /// removing one entry preserves the rest.
+    #[test]
+    fn call_detection_prompt_card_and_ignored_apps_round_trip_via_cmd_set_setting() {
+        with_temp_home(|_| {
+            cmd_set_setting(
+                "call_detection".into(),
+                "prompt_card".into(),
+                "false".into(),
+            )
+            .unwrap();
+            assert!(!Config::load().call_detection.prompt_card);
+            cmd_set_setting("call_detection".into(), "prompt_card".into(), "true".into()).unwrap();
+            assert!(Config::load().call_detection.prompt_card);
+
+            let apps = serde_json::json!(["Zoom, Inc", "Webex"]).to_string();
+            cmd_set_setting("call_detection".into(), "ignored_apps".into(), apps).unwrap();
+            assert_eq!(
+                Config::load().call_detection.ignored_apps,
+                vec!["Zoom, Inc".to_string(), "Webex".to_string()],
+                "comma in an app name must survive the round trip"
+            );
+
+            // Remove "Webex", as the Settings UI does: fetch, filter, re-send.
+            let remaining = serde_json::json!(["Zoom, Inc"]).to_string();
+            cmd_set_setting("call_detection".into(), "ignored_apps".into(), remaining).unwrap();
+            assert_eq!(
+                Config::load().call_detection.ignored_apps,
+                vec!["Zoom, Inc".to_string()],
+                "removing one entry must not corrupt the remaining comma-bearing name"
+            );
+
+            let settings = cmd_get_settings();
+            assert_eq!(
+                settings["call_detection"]["ignored_apps"],
+                serde_json::json!(["Zoom, Inc"])
+            );
         });
     }
 
