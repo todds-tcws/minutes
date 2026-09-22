@@ -37,6 +37,8 @@ docs/demo/.remotion/
 target/
 node_modules/
 dist/
+tauri/tests-e2e/test-results/
+tauri/tests-e2e/playwright-report/
 
 # Environment
 .env

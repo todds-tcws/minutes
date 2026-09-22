@@ -47,3 +47,33 @@ export function captureStatus({ recording = false, processing = false, paused = 
     liveTranscript: { diagnostic },
   };
 }
+
+export const MEETING_DETECTED_HTML_PATH = path.resolve(__dirname, '../../src/meeting-detected.html');
+export const MEETING_DETECTED_HTML_URL = `file://${MEETING_DETECTED_HTML_PATH}`;
+
+export function meetingDetectedPayload({ appName = 'Microsoft Teams', processName = 'Teams', calendarTitle = null } = {}) {
+  return { appName, processName, calendarTitle };
+}
+
+/**
+ * Loads meeting-detected.html against file:// with window.__TAURI__ stubbed
+ * and `cmd_get_meeting_detected` preset via an init script — the page reads
+ * its payload synchronously on load, before a test gets a chance to call
+ * setDefault/queueInvoke after goto(), so the response has to be seeded
+ * before navigation (spec section 5(b)).
+ */
+export async function openMeetingDetected(page, { token = 1, payload, dismissMs, useClock = false } = {}) {
+  if (useClock) {
+    await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(0);
+  }
+  await installTauriStub(page);
+  await page.addInitScript((p) => {
+    window.__testState.defaults['cmd_get_meeting_detected'] = p;
+  }, payload ?? meetingDetectedPayload());
+
+  const query = new URLSearchParams({ t: String(token) });
+  if (dismissMs !== undefined) query.set('dismiss_ms', String(dismissMs));
+  await page.goto(`${MEETING_DETECTED_HTML_URL}?${query.toString()}`);
+  await page.waitForSelector('#record-btn', { state: 'attached' });
+}
