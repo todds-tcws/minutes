@@ -40,6 +40,10 @@
       --text-secondary: #8C8880;
       --accent:         #30D158;
       --accent-hover:   #4ADE70;
+      /* --bg (near-black) on the green accent = 9.62:1; --text (cream) on it
+         is only 1.59:1, so the primary button needs its own token per
+         scheme rather than reusing --bg or --text directly (WCAG 1.4.3). */
+      --btn-primary-text: var(--bg);
       --red:            #FF453A;
       --red-bg:         rgba(255, 69, 58, 0.12);
       --shadow:
@@ -55,6 +59,10 @@
         --text-secondary: #6B6760;
         --accent:         #C96B4E;
         --accent-hover:   #B85A3E;
+        /* --bg (cream) on coral is 3.36:1, below the 4.5:1 AA minimum for
+           the button's 13px/500 label text; --text (near-black) on coral is
+           4.77:1. */
+        --btn-primary-text: var(--text);
         --red:            #C0392B;
         --red-bg:         rgba(192, 57, 43, 0.12);
         --shadow:
@@ -145,7 +153,7 @@
 
     .btn-primary {
       background: var(--accent);
-      color: var(--bg);
+      color: var(--btn-primary-text);
       flex: 1;
     }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
@@ -162,12 +170,12 @@
     }
     .btn-icon:hover:not(:disabled) { color: var(--text); }
 
-    .actions.menu { flex-direction: column; align-items: stretch; gap: 0.25rem; }
+    .actions.menu { flex-direction: column; align-items: stretch; gap: 0.125rem; }
     .btn-menu {
       background: var(--bg-hover);
       color: var(--text);
       text-align: left;
-      height: 1.75rem;
+      height: 1.5rem;
       font-size: var(--text-xs);
     }
     .btn-menu:hover:not(:disabled) { background: var(--border-mid); }
@@ -223,13 +231,17 @@
     const dismissMs = Number(params.get('dismiss_ms')) || 20000;
 
     let appName = '';
+    let calendarTitle = null;
+    let menuOpen = false;
     let closed = false;
     let autoDismissTimer = null;
     let errorTimer = null;
+    let pollIntervalId = null;
 
     function clearTimers() {
       clearTimeout(autoDismissTimer);
       clearTimeout(errorTimer);
+      clearInterval(pollIntervalId);
     }
 
     // Applies a card choice and closes. Idempotent via `closed` — whichever
@@ -243,6 +255,10 @@
         await invoke('cmd_meeting_detected_choice', { choice });
       } catch (error) {
         console.error('meeting-detected choice:', choice, error);
+        // The backend closes the window as part of a successful choice; if
+        // the choice failed it did not, and this card — always-on-top,
+        // undecorated, non-focusable — has no other way out.
+        await invoke('cmd_close_meeting_detected').catch((closeError) => console.error(closeError));
       }
     }
 
@@ -257,10 +273,18 @@
       }
     }
 
+    // The title row is hidden while the snooze menu is open — at the fixed
+    // 360x156 card size, the title row plus the three-item menu overflows
+    // the window (menu-open state doesn't need the title visible anyway).
+    function updateTitleRow() {
+      titleRow.hidden = !calendarTitle || menuOpen;
+    }
+
     function showTitle(title) {
       if (!title) return;
+      calendarTitle = title;
       calendarTitleEl.textContent = title;
-      titleRow.hidden = false;
+      updateTitleRow();
     }
 
     function toggleMenu() {
@@ -268,6 +292,8 @@
       actionsMenu.hidden = !open;
       actionsPrimary.hidden = open;
       snoozeBtn.setAttribute('aria-expanded', String(open));
+      menuOpen = open;
+      updateTitleRow();
     }
 
     function showError(error) {
@@ -288,7 +314,10 @@
       snoozeBtn.setAttribute('aria-label', t('Snooze'));
       menuNotForCall.textContent = t('Not for this call');
       menuHour.textContent = t('1 hour');
-      menuNever.textContent = t(`Never for ${appName}`);
+      // Literal key form so the AC-2.15 catalog key "Never for {app}" is
+      // actually read by t() — an interpolated template string can only
+      // ever match a locale `patterns` regex, never this key.
+      menuNever.textContent = t('Never for {app}').replace('{app}', appName);
     }
 
     async function loadPayload() {
@@ -352,11 +381,13 @@
 
     listen('meeting-detected:calendar', (event) => showTitle(event?.payload?.title));
 
-    render();
+    // No blank initial render(): appName is empty until loadPayload()
+    // resolves and renders itself, so the menu never briefly reads "Never
+    // for " before the payload arrives.
     loadPayload();
     autoDismissTimer = setTimeout(() => choose('not_now'), dismissMs);
     pollCaptureStatus();
-    setInterval(pollCaptureStatus, 1000);
+    pollIntervalId = setInterval(pollCaptureStatus, 1000);
   </script>
 </body>
 </html>

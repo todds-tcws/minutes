@@ -20,3 +20,16 @@ test('the card closes itself when cmd_capture_status reports recording true', as
   // not a card decision.
   expect(await callCount(page, 'cmd_meeting_detected_choice')).toBe(0);
 });
+
+test('cmd_capture_status polls immediately on open, then exactly every 1000ms', async ({ page }) => {
+  await openMeetingDetected(page, { useClock: true, payload: meetingDetectedPayload() });
+  await setDefault(page, 'cmd_capture_status', { recording: false });
+
+  await expect.poll(() => callCount(page, 'cmd_capture_status')).toBe(1); // immediate poll on load
+
+  await page.clock.fastForward(999);
+  expect(await callCount(page, 'cmd_capture_status')).toBe(1);
+
+  await page.clock.fastForward(1);
+  expect(await callCount(page, 'cmd_capture_status')).toBe(2);
+});

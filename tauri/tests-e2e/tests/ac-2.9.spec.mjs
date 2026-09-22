@@ -33,3 +33,18 @@ for (const { id, choice } of items) {
     expect(log[0].args).toEqual({ choice });
   });
 }
+
+test('the snooze menu fits inside the fixed 360x156 card even with a calendar title, by hiding the title row while open', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 156 });
+  await openMeetingDetected(page, { payload: meetingDetectedPayload({ calendarTitle: 'Weekly sync' }) });
+
+  await expect(page.locator('#title-row')).toBeVisible();
+
+  await page.locator('#snooze-btn').click();
+  await expect(page.locator('#actions-menu')).toBeVisible();
+  await expect(page.locator('#title-row')).toBeHidden();
+
+  const overflowed = await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight);
+  expect(overflowed).toBe(false);
+  await expect(page.locator('#menu-never')).toBeInViewport();
+});
