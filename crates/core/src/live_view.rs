@@ -155,6 +155,13 @@ fn read_notes(path: &Path, after_note: u64) -> (Vec<LiveNote>, u64) {
 /// Split `[M:SS] text` into its offset and its text. `None` for a line
 /// without the prefix; `Some((None, _))` for the `?:??` placeholder
 /// `add_note` writes when elapsed time is unknown.
+///
+/// The stamp is validated against exactly what `notes::add_note` writes
+/// (`format!("{}:{:02}", mins, secs)`, `notes.rs:171`): unsigned digits for
+/// the minutes — which are unbounded, a long recording passes 59 — and
+/// exactly two digits in `00`..=`59` for the seconds. Anything else is a
+/// malformed line and is skipped by the caller, including a minute count so
+/// large that its milliseconds overflow `u64`.
 fn parse_note(raw: &str) -> Option<(Option<u64>, &str)> {
     let rest = raw.strip_prefix('[')?;
     let (stamp, text) = rest.split_once(']')?;
@@ -163,9 +170,19 @@ fn parse_note(raw: &str) -> Option<(Option<u64>, &str)> {
         return Some((None, text));
     }
     let (mins, secs) = stamp.split_once(':')?;
+    if !mins.bytes().all(|b| b.is_ascii_digit()) || mins.is_empty() {
+        return None;
+    }
+    if secs.len() != 2 || !secs.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let mins: u64 = mins.parse().ok()?;
     let secs: u64 = secs.parse().ok()?;
-    Some((Some((mins * 60 + secs) * 1000), text))
+    if secs > 59 {
+        return None;
+    }
+    let offset_ms = mins.checked_mul(60)?.checked_add(secs)?.checked_mul(1000)?;
+    Some((Some(offset_ms), text))
 }
 
 #[cfg(test)]
@@ -316,19 +333,87 @@ mod tests {
         assert_eq!(neither, LiveView::default());
     }
 
-    /// AC-1.2: an unreadable path (a directory here) is empty, not an error.
+    /// AC-1.2: an unreadable path (a directory here) is empty for that source
+    /// only — the other source still reads, so the failure cannot be papered
+    /// over by returning [`LiveView::default()`] for the whole call.
     #[test]
     fn ac_1_2_unreadable_files_read_as_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let transcript = dir.path().join("transcript-dir");
-        let notes = dir.path().join("notes-dir");
-        std::fs::create_dir(&transcript).unwrap();
-        std::fs::create_dir(&notes).unwrap();
+        let unreadable_transcript = dir.path().join("transcript-dir");
+        let unreadable_notes = dir.path().join("notes-dir");
+        std::fs::create_dir(&unreadable_transcript).unwrap();
+        std::fs::create_dir(&unreadable_notes).unwrap();
+        let good_transcript = dir.path().join("live-transcript.jsonl");
+        let good_notes = dir.path().join("current-notes.md");
+        std::fs::write(&good_transcript, jsonl(&[(1, 0, "one"), (2, 4000, "two")])).unwrap();
+        std::fs::write(&good_notes, "[0:03] a note\n").unwrap();
+
+        let notes_survive = read_since_in(&unreadable_transcript, &good_notes, 0, 0);
+        assert!(notes_survive.lines.is_empty());
+        assert_eq!(notes_survive.total_lines, 0);
+        assert_eq!(
+            notes_survive.notes,
+            vec![LiveNote {
+                note: 1,
+                offset_ms: 3000,
+                text: "a note".into()
+            }]
+        );
+        assert_eq!(notes_survive.total_notes, 1);
+
+        let lines_survive = read_since_in(&good_transcript, &unreadable_notes, 0, 0);
+        assert_eq!(lines_survive.lines.len(), 2);
+        assert_eq!(lines_survive.total_lines, 2);
+        assert!(lines_survive.notes.is_empty());
+        assert_eq!(lines_survive.total_notes, 0);
 
         assert_eq!(
-            read_since_in(&transcript, &notes, 0, 0),
+            read_since_in(&unreadable_transcript, &unreadable_notes, 0, 0),
             LiveView::default()
         );
+    }
+
+    /// AC-1.2: a timestamp that is not the `M:SS` `add_note` writes — signed
+    /// minutes, one or three seconds digits, seconds past 59, non-digits, or a
+    /// minute count whose milliseconds overflow `u64` — is skipped like any
+    /// other malformed prefix, the scan continues to the valid notes after it,
+    /// and every skipped line still consumes its physical note number.
+    #[test]
+    fn ac_1_2_notes_with_invalid_timestamps_are_skipped() {
+        // u64::MAX / 60_000 is 307_445_734_561_825, so the minute count below
+        // parses fine and only overflows when converted to milliseconds.
+        let fixture = Fixture::new(
+            "",
+            concat!(
+                "[+1:00] signed minutes\n",
+                "[0:7] one second digit\n",
+                "[0:075] three second digits\n",
+                "[0:60] seconds out of range\n",
+                "[0:0x] non digit seconds\n",
+                "[307445734561826:00] overflows milliseconds\n",
+                "[2:05] still parsed\n",
+                "[?:??] still resolved\n",
+            ),
+        );
+
+        let view = fixture.read(0, 0);
+
+        assert_eq!(
+            view.notes,
+            vec![
+                LiveNote {
+                    note: 7,
+                    offset_ms: 125_000,
+                    text: "still parsed".into()
+                },
+                LiveNote {
+                    note: 8,
+                    offset_ms: 125_000,
+                    text: "still resolved".into()
+                },
+            ]
+        );
+        assert_eq!(view.total_notes, 8);
     }
 
     /// AC-1.2: bad JSON, a missing `line` and a missing `text` are skipped and
