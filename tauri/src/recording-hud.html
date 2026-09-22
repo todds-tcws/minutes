@@ -247,6 +247,9 @@
           await invoke('cmd_resume_recording').catch(() => {});
         }
         await invoke('cmd_stop_recording');
+        // The stop is committed once the flag is set; finalizing the capture
+        // files takes seconds and the pill has nothing left to offer, so go.
+        await invoke('cmd_close_recording_hud');
       } catch (error) {
         console.error('recording hud stop:', error);
         busy = false;
