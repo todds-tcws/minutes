@@ -31,3 +31,9 @@ A process-local test lock is not filesystem isolation. Tests of stop signaling m
 - The required cross-engine review was attempted but unavailable: Claude reported `Credit balance is too low`; the gate returned SKIPPED. A separate Codex agent reviewed the diff without editing it.
 - Historical stop attribution remains inferred. The confirmed defect is real test writes to the operational stop sentinel; existing logs cannot prove which request ended each past capture. Persistent provenance is included for future diagnosis.
 - Full core unit-test suite: **1,913 passed, 0 failed, 2 ignored**, run serially from the compiled no-default-features test harness inside a fresh process home and config/state directories. The live application log remained unchanged during validation.
+
+## Deployment verification
+
+Installed through `scripts/install-dev-app.sh` into `~/Applications/Minutes Dev.app` on 2026-09-22 at 17:00 EDT. The installer verified idle recording/processing before replacement and launched fresh PID 64866. The installed host executable SHA-256 matches the signed build exactly: `07e8b62a07811ac381af2e584d8217e236f538a62adaa914d2ab0ff842691401`. Strict bundle verification passes. The bundle identifier, Apple Development signing identity, and team remain unchanged. The native hotkey diagnostic returns 0 with Input Monitoring granted. Post-install status reports no active recording or processing. REQ-4 is satisfied; no live meeting was started as a test and no existing meeting files were merged or deleted.
+
+Source fix: `e7c71509` on `fix/recording-test-isolation`, pushed to the origin fork. A rollback copy of the previous signed app is retained locally at `/private/tmp/Minutes Dev-before-recording-fix.app`. No public release or upstream merge was performed.
