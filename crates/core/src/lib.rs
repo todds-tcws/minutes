@@ -257,6 +257,7 @@ pub mod dictation;
 // Live transcript mode (requires streaming + whisper)
 #[cfg(all(feature = "streaming", feature = "whisper"))]
 pub mod live_transcript;
+pub mod live_view;
 #[cfg(any(test, all(feature = "streaming", feature = "whisper")))]
 mod sidecar_timing;
 

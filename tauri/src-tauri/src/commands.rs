@@ -22001,6 +22001,13 @@ pub fn cmd_stop_live_transcript(state: tauri::State<AppState>) -> Result<(), Str
     Err("No live transcript session active".into())
 }
 
+/// Transcript lines and notes newer than the pane's cursors, for the live
+/// recording pane. Never fails: a missing or torn file reads as empty.
+#[tauri::command]
+pub fn cmd_live_view(after_line: u64, after_note: u64) -> minutes_core::live_view::LiveView {
+    minutes_core::live_view::read_since(after_line, after_note)
+}
+
 #[tauri::command]
 pub fn cmd_live_transcript_status(state: tauri::State<AppState>) -> serde_json::Value {
     let in_app_active = state.live_transcript_active.load(Ordering::Relaxed);
