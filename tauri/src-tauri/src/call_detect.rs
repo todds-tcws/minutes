@@ -1923,6 +1923,8 @@ mod tests {
             stop_when_call_ends: false,
             call_end_stop_countdown_secs: 30,
             any_mic_app: false,
+            prompt_card: true,
+            ignored_apps: vec![],
         }
     }
 

@@ -35,7 +35,7 @@
 **Reference**: spec AC-1.3 through AC-1.12, AC-1.14; section 2 i18n key-presence-only note.
 **Definition of done**: code-reviewer pass. accessibility-specialist audit (WCAG 2.2 AA) on the pane — no waiver applies here (the section 2/6 waiver covers only the REQ-2 card in Task 5).
 
-### [ ] Task 3: REQ-2 core — call_prompt.rs (SnoozeLedger, decide, CallPromptState) + config keys
+### [x] Task 3: REQ-2 core — call_prompt.rs (SnoozeLedger, decide, CallPromptState) + config keys
 **Description**: New `crates/core/src/call_prompt.rs`: `SnoozeLedger` persisted at `~/.minutes/call-prompt-snooze.json` (mode 0600, atomic write via temp+rename, same pattern as `recording-pause.json`), mapping `app_name → until_rfc3339`, ignoring expired entries on read (no write-on-read) and dropping them on write. `fn decide(app_name, now, ignored_apps: &[String], ledger: &SnoozeLedger, this_call: &HashSet<String>) -> Decision` returning `Suppressed(Ignored|Snoozed|ThisCall)` or `Prompt`, stopping at first match in that order. `CallPromptState { this_call: HashSet<String>, card_open: bool }` with `card_closed()` clearing `card_open` (consumed by Task 4's `Destroyed` handler). Add `call_detection.prompt_card: bool` (default `true`) and `call_detection.ignored_apps: Vec<String>` (default empty) to the config struct with a round-trip save/load test; document both under `[call_detection]` in `docs/architecture/config.md`.
 **Requirements**: REQ-2
 **Acceptance criteria**: AC-2.1, AC-2.2, AC-2.6, AC-2.10, AC-2.14, AC-2.16

@@ -341,6 +341,8 @@ Dictation clipboard behavior is platform-specific:
 | `stop_when_call_ends` | `false` | Show an auto-stop countdown when the call ends |
 | `call_end_stop_countdown_secs` | `30` | Seconds before auto-stop fires |
 | `any_mic_app` | `true` | Prompt when any other app holds the microphone (Slack huddles, Discord, FaceTime, any browser), labelled by that app. Apps in `apps` and the Meet/Teams web probes are checked first. |
+| `prompt_card` | `true` | Ask with the floating "In a meeting?" card (Record / Not now / snooze) instead of an OS notification. Off falls back to the notification. |
+| `ignored_apps` | `[]` | App names that never prompt. Added by "Never for <app>" on the card, removed in Settings > Call detection. |
 
 ### `[palette]` — command palette
 

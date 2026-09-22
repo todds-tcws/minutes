@@ -120,6 +120,7 @@ mod exit_teardown_tests {
 #[cfg(any(test, all(feature = "streaming", feature = "whisper")))]
 pub(crate) mod bounded_inference;
 pub mod calendar;
+pub mod call_prompt;
 pub mod capture;
 pub mod config;
 pub mod context_store;

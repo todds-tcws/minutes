@@ -927,6 +927,11 @@ pub struct CallDetectionConfig {
     /// any browser). Same signal Notion uses; needs no extra permission.
     /// Default: true.
     pub any_mic_app: bool,
+    /// Ask with the floating "In a meeting?" card instead of an OS
+    /// notification. Default: true.
+    pub prompt_card: bool,
+    /// App names that never prompt ("Never for <app>" on the card).
+    pub ignored_apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1500,6 +1505,8 @@ impl Default for CallDetectionConfig {
             stop_when_call_ends: false,
             call_end_stop_countdown_secs: 30,
             any_mic_app: true,
+            prompt_card: true,
+            ignored_apps: vec![],
         }
     }
 }
@@ -3178,6 +3185,43 @@ enabled = true
         let config = Config::load_from(&config_path);
         assert!(!config.call_detection.stop_when_call_ends);
         assert_eq!(config.call_detection.call_end_stop_countdown_secs, 30);
+    }
+
+    // ── Call detection: floating prompt card ──────────────────
+
+    #[test]
+    fn ac_2_14_prompt_card_and_ignored_apps_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        assert!(
+            config.call_detection.prompt_card,
+            "card is the default surface"
+        );
+        assert!(config.call_detection.ignored_apps.is_empty());
+
+        config.call_detection.prompt_card = false;
+        config.call_detection.ignored_apps = vec!["Slack".into(), "Webex".into()];
+        config.save_to(&config_path).unwrap();
+
+        let reloaded = Config::load_from(&config_path);
+        assert!(!reloaded.call_detection.prompt_card);
+        assert_eq!(reloaded.call_detection.ignored_apps, vec!["Slack", "Webex"]);
+
+        // Removing a row from Settings saves the list without that app, so it
+        // prompts again on its next detection (AC-2.1 fall-through).
+        let mut removed = reloaded;
+        removed
+            .call_detection
+            .ignored_apps
+            .retain(|app| app != "Slack");
+        removed.call_detection.prompt_card = true;
+        removed.save_to(&config_path).unwrap();
+
+        let reloaded = Config::load_from(&config_path);
+        assert!(reloaded.call_detection.prompt_card);
+        assert_eq!(reloaded.call_detection.ignored_apps, vec!["Webex"]);
     }
 
     // ── Palette config + upgrade migration ────────────────────
