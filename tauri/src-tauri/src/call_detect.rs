@@ -516,7 +516,7 @@ impl CallDetector {
             loop {
                 let config = self.reload_config();
                 if !config.enabled {
-                    if let Some(previous) = self.clear_active_call() {
+                    if let Some(previous) = self.clear_active_call_ended(&app) {
                         log_call_detect_event(
                             "info",
                             "cleared",
@@ -549,7 +549,7 @@ impl CallDetector {
                     && !(started_by_call_detect && config.stop_when_call_ends)
                 {
                     if minutes_audio_active {
-                        if let Some(previous) = self.clear_active_call() {
+                        if let Some(previous) = self.clear_active_call_ended(&app) {
                             log_call_detect_event(
                                 "info",
                                 "cleared",
@@ -629,7 +629,7 @@ impl CallDetector {
                         }
                     }
                     DetectActiveCallResult::PermissionWarning { browser_app } => {
-                        if let Some(previous) = self.clear_active_call() {
+                        if let Some(previous) = self.clear_active_call_ended(&app) {
                             log_call_detect_event(
                                 "info",
                                 "cleared",
@@ -717,7 +717,7 @@ impl CallDetector {
                                 }
                             }
                             NoCallDecision::ClearIfStale => {
-                                if let Some(previous) = self.clear_active_call() {
+                                if let Some(previous) = self.clear_active_call_ended(&app) {
                                     log_call_detect_event(
                                         "info",
                                         "cleared",
@@ -1185,9 +1185,30 @@ impl CallDetector {
         }
     }
 
-    fn clear_active_call(&self) -> Option<String> {
+    /// Drop the tracked call. Returns `(process_name, display_name)` of the
+    /// call that was dropped; the display name is the key every prompt
+    /// suppression rule uses.
+    fn clear_active_call(&self) -> Option<(String, String)> {
         let mut active = self.active_call.lock().unwrap();
-        active.take().map(|state| state.process_name)
+        active
+            .take()
+            .map(|state| (state.process_name, state.display_name))
+    }
+
+    /// [`Self::clear_active_call`] plus the prompt-layer cleanup every
+    /// call-end transition owes: a "Not now" is scoped to one call, and a
+    /// card still asking about a call that is over is stale.
+    ///
+    /// This is the only call-end path that exists when nothing is recording
+    /// — `arm_call_end_countdown` (and its `call:ended` emit) only runs while
+    /// a call-detect-started recording is in flight, which is mutually
+    /// exclusive with a card being on screen.
+    fn clear_active_call_ended(&self, app: &tauri::AppHandle) -> Option<String> {
+        self.clear_active_call()
+            .map(|(process_name, display_name)| {
+                crate::commands::on_call_ended(app, &display_name);
+                process_name
+            })
     }
 
     fn browser_probe_due(&self) -> bool {
@@ -2813,6 +2834,58 @@ mod tests {
                 crate::commands::CallEndCountdownTerminalState::None,
             ),
             NoCallDecision::ClearIfStale
+        );
+    }
+
+    /// AC-2.8, sentences 3 and 4: the prompt card only exists while nothing
+    /// is recording, and `decide_no_call_action` only reaches the
+    /// `call:ended` emit (`ArmCountdown`/`RearmCountdown`) while a
+    /// call-detect-started recording is in flight. So the call end that
+    /// matters for the card lands in `ClearIfStale`, and that arm is what has
+    /// to run the prompt cleanup.
+    #[test]
+    fn ac_2_8_call_end_without_a_recording_routes_through_on_call_ended() {
+        // Not recording: every call end takes the ClearIfStale arm.
+        for stop_when_call_ends in [false, true] {
+            assert_eq!(
+                decide_no_call_action(
+                    false,
+                    false,
+                    stop_when_call_ends,
+                    false,
+                    false,
+                    crate::commands::CallEndCountdownTerminalState::None,
+                ),
+                NoCallDecision::ClearIfStale
+            );
+        }
+
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/call_detect.rs"))
+                .expect("failed to read call_detect.rs");
+        // Production code only — everything from the first top-level test
+        // module on is cut, so this test's own body cannot satisfy it.
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("call_detect.rs must have production code");
+
+        let after_arm = production
+            .split_once("NoCallDecision::ClearIfStale => {")
+            .expect("the poll loop must still have a ClearIfStale arm")
+            .1;
+        assert!(
+            after_arm[..after_arm.len().min(300)].contains("self.clear_active_call_ended(&app)"),
+            "the ClearIfStale arm must clear the prompt state, not just the detector's"
+        );
+        let cleanup = production
+            .split_once("fn clear_active_call_ended")
+            .expect("clear_active_call_ended must exist")
+            .1;
+        assert!(
+            cleanup[..cleanup.len().min(300)]
+                .contains("crate::commands::on_call_ended(app, &display_name)"),
+            "clear_active_call_ended must hand the display name to the prompt layer"
         );
     }
 

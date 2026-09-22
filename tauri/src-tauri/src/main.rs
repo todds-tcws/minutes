@@ -3064,6 +3064,15 @@ fn main() {
                         commands::close_palette_window(&app_handle);
                     }
                 }
+                // Every close path of the card ends here — a button, the
+                // auto-dismiss, an external recording start, the settings
+                // toggle, an OS close, a webview crash — so this is the one
+                // place that releases the single-card slot.
+                tauri::WindowEvent::Destroyed
+                    if window.label() == commands::MEETING_DETECTED_LABEL =>
+                {
+                    commands::on_meeting_detected_destroyed(window.app_handle());
+                }
                 // Track macOS system appearance changes via the main
                 // window's ThemeChanged event. Tao registers an
                 // `AppleInterfaceThemeChangedNotification` observer on
@@ -3074,15 +3083,6 @@ fn main() {
                 // the user closes the main window. Filter to "main" so
                 // we only sync once per system flip (the secondary
                 // windows would otherwise re-fire the same event).
-                // Every close path of the card ends here — a button, the
-                // auto-dismiss, an external recording start, the settings
-                // toggle, an OS close, a webview crash — so this is the one
-                // place that releases the single-card slot.
-                tauri::WindowEvent::Destroyed
-                    if window.label() == commands::MEETING_DETECTED_LABEL =>
-                {
-                    commands::on_meeting_detected_destroyed(window.app_handle());
-                }
                 tauri::WindowEvent::ThemeChanged(theme) if window.label() == "main" => {
                     let app_handle = window.app_handle().clone();
                     if let Some(state) = app_handle.try_state::<TrayAppearanceState>() {
@@ -3401,30 +3401,49 @@ mod tray_activity_tests {
         );
     }
 
-    #[test]
-    fn ac_2_16_destroyed_handler_releases_the_meeting_detected_card() {
+    /// Production code only: everything below `mod tray_activity_tests` is
+    /// this module, so searching the whole file would let these assertions
+    /// match their own needles.
+    fn main_rs_production_source() -> String {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let main_rs = std::fs::read_to_string(format!("{}/src/main.rs", manifest))
             .expect("failed to read main.rs");
+        main_rs
+            .split_once("mod tray_activity_tests")
+            .expect("main.rs must still have its test module")
+            .0
+            .to_string()
+    }
 
+    #[test]
+    fn ac_2_16_destroyed_handler_releases_the_meeting_detected_card() {
+        let production = main_rs_production_source();
+
+        let destroyed_arm = production
+            .split_once("tauri::WindowEvent::Destroyed")
+            .expect("the card needs a Destroyed handler")
+            .1;
+        let destroyed_arm = &destroyed_arm[..destroyed_arm.len().min(250)];
         assert!(
-            main_rs.contains(
-                "tauri::WindowEvent::Destroyed if window.label() == commands::MEETING_DETECTED_LABEL"
-            ),
-            "every close path of the card must run through the Destroyed handler"
+            destroyed_arm.contains("if window.label() == commands::MEETING_DETECTED_LABEL =>"),
+            "the Destroyed handler must be scoped to the card's window"
         );
         assert!(
-            main_rs.contains("commands::on_meeting_detected_destroyed"),
+            destroyed_arm.contains("commands::on_meeting_detected_destroyed(window.app_handle())"),
             "the Destroyed handler must release the card slot"
         );
+        for command in [
+            "commands::cmd_get_meeting_detected,",
+            "commands::cmd_close_meeting_detected,",
+            "commands::cmd_meeting_detected_choice,",
+        ] {
+            assert!(
+                production.contains(command),
+                "{command} must be registered with Tauri"
+            );
+        }
         assert!(
-            main_rs.contains("commands::cmd_get_meeting_detected")
-                && main_rs.contains("commands::cmd_close_meeting_detected")
-                && main_rs.contains("commands::cmd_meeting_detected_choice"),
-            "the three card commands must be registered with Tauri"
-        );
-        assert!(
-            main_rs.contains(".skip_initial_state(commands::MEETING_DETECTED_LABEL)"),
+            production.contains(".skip_initial_state(commands::MEETING_DETECTED_LABEL)"),
             "the card must not persist window state"
         );
     }

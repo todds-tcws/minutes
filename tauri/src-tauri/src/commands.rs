@@ -20684,13 +20684,20 @@ const CALENDAR_TITLE_BUDGET: Duration = Duration::from_millis(1500);
 /// Length of the "1 hour" snooze.
 const SNOOZE_MINUTES: i64 = 60;
 
-/// What the card renders. Staged by token and drained by the page, same
-/// pattern as `meeting-prompt`.
+/// What the card renders. Staged by token, read by the page; unlike
+/// `meeting-prompt` it is *not* drained on read — `cmd_meeting_detected_choice`
+/// carries only a choice, so the backend keeps the payload as its memory of
+/// which app the open card is about. The `Destroyed` handler clears it.
+///
+/// `calendar_title` starts empty and is filled in by the calendar lookup
+/// (AC-2.5). It is carried here as well as emitted so a title that resolves
+/// before the page has registered its listener is still rendered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CardPayload {
     pub app_name: String,
     pub process_name: String,
+    pub calendar_title: Option<String>,
 }
 
 /// Where a detection ends up.
@@ -20819,6 +20826,7 @@ where
         CardPayload {
             app_name: app_name.to_string(),
             process_name: process_name.to_string(),
+            calendar_title: None,
         },
         rx,
     )
@@ -20898,13 +20906,15 @@ fn card_app_name(state: &AppState) -> Option<String> {
         .map(|(_, payload)| payload.app_name.clone())
 }
 
-/// Create the card window. The payload stays staged for as long as the card
-/// lives: `cmd_meeting_detected_choice` carries only the choice, so the
-/// backend has to remember which app it is about. Cleared on `Destroyed`.
+/// Create the card window and return the token it was staged under. The
+/// payload stays staged for as long as the card lives:
+/// `cmd_meeting_detected_choice` carries only the choice, so the backend has
+/// to remember which app it is about. Cleared on `Destroyed`.
 pub(crate) fn show_meeting_detected_card(
     app: &tauri::AppHandle,
     payload: CardPayload,
-) -> Result<(), String> {
+    config: &Config,
+) -> Result<u64, String> {
     use tauri::WebviewUrl;
 
     let state = app
@@ -20916,7 +20926,6 @@ pub(crate) fn show_meeting_detected_card(
     *staged_card(&state) = Some((token, payload));
 
     let (x, y) = meeting_detected_position(app);
-    let config = Config::load();
     let url = format!("meeting-detected.html?t={}", token);
     match tauri::WebviewWindowBuilder::new(app, MEETING_DETECTED_LABEL, WebviewUrl::App(url.into()))
         .title(minutes_core::i18n::tr("In a meeting?"))
@@ -20933,12 +20942,51 @@ pub(crate) fn show_meeting_detected_card(
         .skip_taskbar(true)
         .build()
     {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(token),
         Err(e) => {
-            // No window, so no JS will ever drain the payload.
+            // No window, so no page will ever read the payload.
             *staged_card(&state) = None;
             Err(e.to_string())
         }
+    }
+}
+
+/// Record `title` on the staged card iff it is still the card that asked for
+/// it. `false` means the card closed or was replaced and the title is stale.
+pub(crate) fn stamp_calendar_title(
+    staged: &mut Option<(u64, CardPayload)>,
+    token: u64,
+    title: &str,
+) -> bool {
+    match staged.as_mut() {
+        Some((staged_token, payload)) if *staged_token == token => {
+            payload.calendar_title = Some(title.to_string());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Hand a calendar title to the card that asked for it, and only to that
+/// card: a card that closed (or was replaced) inside the 1500 ms budget must
+/// not inherit the previous app's meeting title (AC-2.5, "the card is still
+/// open"). The title is stored on the staged payload as well as emitted, so
+/// a page that has not registered its listener yet still renders it from
+/// `cmd_get_meeting_detected`.
+fn deliver_calendar_title(app: &tauri::AppHandle, token: u64, title: String) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if !stamp_calendar_title(&mut staged_card(&state), token, &title) {
+        // Card gone or replaced: the lookup is stale, drop it.
+        return;
+    }
+    if let Some(win) = app.get_webview_window(MEETING_DETECTED_LABEL) {
+        win.emit(
+            "meeting-detected:calendar",
+            serde_json::json!({ "title": title }),
+        )
+        .ok();
     }
 }
 
@@ -20976,7 +21024,9 @@ pub fn on_call_detected(app: &tauri::AppHandle, payload: crate::call_detect::Cal
     );
 
     match detection_action(
-        state.recording.load(Ordering::Relaxed),
+        // `recording_active` also sees a recording this process does not own
+        // (`minutes record` from the CLI), which must be just as silent.
+        recording_active(&state.recording),
         payload.is_reminder,
         config.call_detection.prompt_card,
         decision,
@@ -20990,24 +21040,18 @@ pub fn on_call_detected(app: &tauri::AppHandle, payload: crate::call_detect::Cal
             let (card, calendar) = prepare_card(&payload.app_name, &payload.process_name, || {
                 minutes_core::calendar::events_overlapping(chrono::Local::now())
             });
-            let built = show_meeting_detected_card(app, card);
+            let built = show_meeting_detected_card(app, card, &config);
             if built.is_err() {
                 call_prompt_state(&state).card_closed();
             }
-            match call_prompt_surface(true, Some(built)) {
+            let token = *built.as_ref().unwrap_or(&0);
+            match call_prompt_surface(true, Some(built.map(|_| ()))) {
                 Surface::Card => {
                     // The 1500 ms wait happens off the detector's poll thread.
                     let app = app.clone();
                     std::thread::spawn(move || {
-                        let Some(title) = await_calendar_title(&calendar) else {
-                            return;
-                        };
-                        if let Some(win) = app.get_webview_window(MEETING_DETECTED_LABEL) {
-                            win.emit(
-                                "meeting-detected:calendar",
-                                serde_json::json!({ "title": title }),
-                            )
-                            .ok();
+                        if let Some(title) = await_calendar_title(&calendar) {
+                            deliver_calendar_title(&app, token, title);
                         }
                     });
                 }
@@ -21050,7 +21094,10 @@ pub fn on_meeting_detected_destroyed(app: &tauri::AppHandle) {
     *staged_card(&state) = None;
 }
 
-/// The card's payload, for the token it was opened with.
+/// The card's payload, for the token it was opened with. Repeatable by
+/// design (spec 1.8): the payload is the backend's record of the open card,
+/// so it is cleared by the `Destroyed` handler, not by this read. A wrong
+/// token gets `None`.
 #[tauri::command]
 pub fn cmd_get_meeting_detected(
     token: u64,
@@ -21067,6 +21114,36 @@ pub fn cmd_close_meeting_detected(app: tauri::AppHandle) -> Result<(), String> {
     close_meeting_detected_window(&app)
 }
 
+/// The whole effect of a card button except closing the window: the this-call
+/// set, the snooze ledger and the ignored-apps list. Takes its state and its
+/// paths so it can be exercised without a running app.
+///
+/// Returns `true` when `config` changed and has to be saved.
+pub(crate) fn apply_choice(
+    effect: ChoiceEffect,
+    app_name: &str,
+    ledger_path: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+    prompt: &mut minutes_core::call_prompt::CallPromptState,
+    config: &mut Config,
+) -> Result<bool, String> {
+    match effect {
+        // Record: the page already started the recording.
+        ChoiceEffect::CloseOnly => Ok(false),
+        ChoiceEffect::ThisCall => {
+            prompt.dismiss_this_call(app_name);
+            Ok(false)
+        }
+        ChoiceEffect::SnoozeHour => snooze_hour_in(ledger_path, app_name, now)
+            .map(|_| false)
+            .map_err(|e| e.to_string()),
+        ChoiceEffect::Ignore => Ok(append_ignored_app(
+            &mut config.call_detection.ignored_apps,
+            app_name,
+        )),
+    }
+}
+
 /// Apply a card button, then close the card.
 #[tauri::command]
 pub fn cmd_meeting_detected_choice(
@@ -21075,25 +21152,23 @@ pub fn cmd_meeting_detected_choice(
     choice: String,
 ) -> Result<(), String> {
     let effect = choice_effect(&choice).ok_or_else(|| format!("unknown choice: {}", choice))?;
-    let app_name = card_app_name(&state);
+    // No staged payload means no card to speak for. Failing loudly beats
+    // silently losing a "Never for <app>" to a race with the close.
+    let app_name = card_app_name(&state)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "no meeting-detected card is open".to_string())?;
 
-    if let Some(app_name) = app_name.filter(|name| !name.is_empty()) {
-        match effect {
-            ChoiceEffect::CloseOnly => {}
-            ChoiceEffect::ThisCall => call_prompt_state(&state).dismiss_this_call(&app_name),
-            ChoiceEffect::SnoozeHour => snooze_hour_in(
-                &minutes_core::call_prompt::ledger_path(),
-                &app_name,
-                chrono::Utc::now(),
-            )
-            .map_err(|e| e.to_string())?,
-            ChoiceEffect::Ignore => {
-                let mut config = Config::load();
-                if append_ignored_app(&mut config.call_detection.ignored_apps, &app_name) {
-                    config.save().map_err(|e| e.to_string())?;
-                }
-            }
-        }
+    let mut config = Config::load();
+    let dirty = apply_choice(
+        effect,
+        &app_name,
+        &minutes_core::call_prompt::ledger_path(),
+        chrono::Utc::now(),
+        &mut call_prompt_state(&state),
+        &mut config,
+    )?;
+    if dirty {
+        config.save().map_err(|e| e.to_string())?;
     }
 
     close_meeting_detected_window(&app)
@@ -25346,6 +25421,193 @@ mod meeting_detected_tests {
             "already ignored: no second entry, no config write"
         );
         assert_eq!(apps, vec!["Zoom".to_string(), "Slack".to_string()]);
+    }
+
+    // ── AC-2.7 / AC-2.8 / AC-2.9: what a click actually does ──
+    //
+    // `apply_choice` is the whole effect of a card button apart from closing
+    // the window, so these exercise the handler itself against a real ledger
+    // file and a real `Config`, not just the enum mapping.
+
+    fn suppression(prompt: &CallPromptState, config: &Config, ledger_path: &Path) -> Decision {
+        minutes_core::call_prompt::decide(
+            "Slack",
+            now(),
+            &config.call_detection.ignored_apps,
+            &minutes_core::call_prompt::SnoozeLedger::load_from(ledger_path, now()),
+            prompt.this_call(),
+        )
+    }
+
+    #[test]
+    fn ac_2_7_record_leaves_no_suppression_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("call-prompt-snooze.json");
+        let mut prompt = CallPromptState::default();
+        let mut config = Config::default();
+
+        let dirty = apply_choice(
+            ChoiceEffect::CloseOnly,
+            "Slack",
+            &ledger,
+            now(),
+            &mut prompt,
+            &mut config,
+        )
+        .unwrap();
+
+        assert!(!dirty, "Record must not rewrite the config");
+        assert!(!ledger.exists(), "Record must not write the snooze ledger");
+        assert_eq!(suppression(&prompt, &config, &ledger), Decision::Prompt);
+    }
+
+    #[test]
+    fn ac_2_8_not_now_suppresses_only_until_the_call_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("call-prompt-snooze.json");
+        let mut prompt = CallPromptState::default();
+        let mut config = Config::default();
+
+        let dirty = apply_choice(
+            choice_effect("not_now").unwrap(),
+            "Slack",
+            &ledger,
+            now(),
+            &mut prompt,
+            &mut config,
+        )
+        .unwrap();
+
+        assert!(!dirty);
+        assert!(!ledger.exists(), "\"Not now\" is in memory, not on disk");
+        assert_eq!(
+            suppression(&prompt, &config, &ledger),
+            Decision::Suppressed(SuppressReason::ThisCall)
+        );
+
+        // The call-end path (`on_call_ended` → `call_ended`) releases it.
+        prompt.call_ended("Slack");
+        assert_eq!(suppression(&prompt, &config, &ledger), Decision::Prompt);
+    }
+
+    #[test]
+    fn ac_2_9_snooze_hour_persists_an_hour_of_suppression() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("call-prompt-snooze.json");
+        let mut prompt = CallPromptState::default();
+        let mut config = Config::default();
+
+        let dirty = apply_choice(
+            choice_effect("snooze_hour").unwrap(),
+            "Slack",
+            &ledger,
+            now(),
+            &mut prompt,
+            &mut config,
+        )
+        .unwrap();
+
+        assert!(!dirty, "a snooze is not a config change");
+        assert_eq!(
+            suppression(&prompt, &config, &ledger),
+            Decision::Suppressed(SuppressReason::Snoozed)
+        );
+    }
+
+    #[test]
+    fn ac_2_9_snooze_hour_reports_a_failed_write() {
+        let dir = tempfile::tempdir().unwrap();
+        // The ledger's parent is a file, so `create_dir_all` cannot succeed.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let ledger = blocker.join("call-prompt-snooze.json");
+
+        let err = apply_choice(
+            ChoiceEffect::SnoozeHour,
+            "Slack",
+            &ledger,
+            now(),
+            &mut CallPromptState::default(),
+            &mut Config::default(),
+        )
+        .expect_err("a ledger that cannot be written must not report success");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn ac_2_9_never_marks_the_config_dirty_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("call-prompt-snooze.json");
+        let mut prompt = CallPromptState::default();
+        let mut config = Config::default();
+
+        assert!(
+            apply_choice(
+                choice_effect("never").unwrap(),
+                "Slack",
+                &ledger,
+                now(),
+                &mut prompt,
+                &mut config,
+            )
+            .unwrap(),
+            "the first \"Never\" has to be saved"
+        );
+        assert_eq!(
+            config.call_detection.ignored_apps,
+            vec!["Slack".to_string()]
+        );
+        assert_eq!(
+            suppression(&prompt, &config, &ledger),
+            Decision::Suppressed(SuppressReason::Ignored)
+        );
+
+        assert!(
+            !apply_choice(
+                ChoiceEffect::Ignore,
+                "Slack",
+                &ledger,
+                now(),
+                &mut prompt,
+                &mut config,
+            )
+            .unwrap(),
+            "a repeat must not rewrite the config"
+        );
+        assert_eq!(
+            config.call_detection.ignored_apps,
+            vec!["Slack".to_string()]
+        );
+    }
+
+    // ── AC-2.5: a title only reaches the card that asked ─────
+
+    #[test]
+    fn ac_2_5_calendar_title_lands_on_the_card_that_asked() {
+        let (payload, _rx) = prepare_card("Slack", "Slack", Vec::new);
+        let mut staged = Some((7, payload));
+
+        assert!(stamp_calendar_title(&mut staged, 7, "Weekly sync"));
+        assert_eq!(
+            staged.as_ref().unwrap().1.calendar_title.as_deref(),
+            Some("Weekly sync"),
+            "the page reads the title from the payload even if it listens late"
+        );
+    }
+
+    #[test]
+    fn ac_2_5_calendar_title_for_a_replaced_or_closed_card_is_dropped() {
+        let (payload, _rx) = prepare_card("Microsoft Teams", "Teams", Vec::new);
+        let mut staged = Some((8, payload));
+
+        assert!(
+            !stamp_calendar_title(&mut staged, 7, "Slack's meeting"),
+            "a title from the previous card must not be shown on this one"
+        );
+        assert_eq!(staged.as_ref().unwrap().1.calendar_title, None);
+
+        let mut closed = None;
+        assert!(!stamp_calendar_title(&mut closed, 7, "Weekly sync"));
     }
 
     // ── AC-2.12: which surface the detection reaches ─────────
