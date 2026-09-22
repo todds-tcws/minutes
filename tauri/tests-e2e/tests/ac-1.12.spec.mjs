@@ -41,9 +41,29 @@ for (const colorScheme of ['light', 'dark']) {
         probe.remove();
         return parseColor(resolved);
       }
-      const rootStyle = getComputedStyle(document.documentElement);
-      const accent = parseColor(rootStyle.getPropertyValue('--accent'));
-      const bg = parseColor(rootStyle.getPropertyValue('--bg'));
+      // Render a real note row and read its computed border, so removing the
+      // border rule (or pointing it at another token) fails this test.
+      const list = document.getElementById('live-pane-list');
+      const row = document.createElement('div');
+      row.className = 'live-pane-row live-pane-row--note';
+      row.textContent = 'probe';
+      list.appendChild(row);
+      const rowStyle = getComputedStyle(row);
+      if (rowStyle.borderLeftStyle === 'none' || parseFloat(rowStyle.borderLeftWidth) < 3) {
+        throw new Error(`note row has no 3px left border (${rowStyle.borderLeftStyle} ${rowStyle.borderLeftWidth})`);
+      }
+      const accent = parseColor(rowStyle.borderLeftColor);
+      function effectiveBackground(el) {
+        for (let node = el; node; node = node.parentElement) {
+          const c = parseColor(getComputedStyle(node).backgroundColor);
+          const raw = getComputedStyle(node).backgroundColor;
+          const alpha = raw.match(/rgba\(([^)]+)\)/) ? parseFloat(raw.split(',')[3]) : 1;
+          if (alpha > 0.99) return c;
+        }
+        return parseColor(getComputedStyle(document.documentElement).getPropertyValue('--bg'));
+      }
+      const bg = effectiveBackground(row);
+      row.remove();
       const lAccent = relativeLuminance(accent);
       const lBg = relativeLuminance(bg);
       const [lighter, darker] = lAccent > lBg ? [lAccent, lBg] : [lBg, lAccent];

@@ -113,6 +113,12 @@ struct ActiveCallState {
 
 enum DetectionTransition {
     NewSession,
+    /// A different app took over the tracked call without an empty poll in
+    /// between. Carries the display name whose call just ended so the prompt
+    /// layer can drop its "this call" suppression (AC-2.8).
+    Replaced {
+        previous_display_name: String,
+    },
     Reminder,
     Noop,
 }
@@ -595,6 +601,12 @@ impl CallDetector {
                         match self.note_active_call(&process_name, &display_name) {
                             DetectionTransition::Noop => {}
                             transition => {
+                                if let DetectionTransition::Replaced {
+                                    previous_display_name,
+                                } = &transition
+                                {
+                                    crate::commands::on_call_ended(&app, previous_display_name);
+                                }
                                 let is_reminder =
                                     matches!(transition, DetectionTransition::Reminder);
                                 let action = if is_reminder { "reminder" } else { "detected" };
@@ -1137,13 +1149,18 @@ impl CallDetector {
                 DetectionTransition::NewSession
             }
             Some(state) if state.process_name != process_name => {
-                *state = ActiveCallState {
-                    process_name: process_name.to_string(),
-                    display_name: display_name.to_string(),
-                    last_notified_at: now,
-                    call_end_fired: false,
-                };
-                DetectionTransition::NewSession
+                let previous = std::mem::replace(
+                    state,
+                    ActiveCallState {
+                        process_name: process_name.to_string(),
+                        display_name: display_name.to_string(),
+                        last_notified_at: now,
+                        call_end_fired: false,
+                    },
+                );
+                DetectionTransition::Replaced {
+                    previous_display_name: previous.display_name,
+                }
             }
             Some(state) => {
                 if now.duration_since(state.last_notified_at)
@@ -2005,7 +2022,26 @@ mod tests {
         ));
         assert!(matches!(
             detector.note_active_call("face.time", "FaceTime"),
+            DetectionTransition::Replaced { previous_display_name } if previous_display_name == "Zoom"
+        ));
+    }
+
+    #[test]
+    fn ac_2_8_direct_app_replacement_reports_the_ended_call() {
+        // Slack -> Zoom -> Slack with no empty poll in between: each hop must
+        // name the app whose call ended so its "this call" suppression clears.
+        let detector = CallDetector::new(test_call_detection_config(vec!["Slack".into()]));
+        assert!(matches!(
+            detector.note_active_call("Slack", "Slack"),
             DetectionTransition::NewSession
+        ));
+        assert!(matches!(
+            detector.note_active_call("zoom.us", "Zoom"),
+            DetectionTransition::Replaced { previous_display_name } if previous_display_name == "Slack"
+        ));
+        assert!(matches!(
+            detector.note_active_call("Slack", "Slack"),
+            DetectionTransition::Replaced { previous_display_name } if previous_display_name == "Zoom"
         ));
     }
 
@@ -2904,7 +2940,7 @@ mod tests {
 
         assert!(matches!(
             detector.note_active_call("Microsoft Teams", "Teams"),
-            DetectionTransition::NewSession
+            DetectionTransition::Replaced { previous_display_name } if previous_display_name == "Zoom"
         ));
         let snap = detector.active_call_snapshot().unwrap();
         assert_eq!(snap.0, "Microsoft Teams");

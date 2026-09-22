@@ -1,7 +1,7 @@
 # Minutes: Live Notes Pane + Meeting-Detected Prompt — Development Tasks
 
 ## Specification Summary
-**Source**: `project-specs/live-notes-mic-prompt-setup.md`, version 1.7 (commit dfe201f0). Approved by Todd at the plan gate, 2026-09-22 — the do-nothing row, the RB-1 NEEDS_WORK ceiling, and the WCAG waiver for the meeting-detected card are all confirmed (spec header + section 6).
+**Source**: `project-specs/live-notes-mic-prompt-setup.md`, version 1.9 (1.7 approved at the plan gate, commit dfe201f0; 1.8 mechanism corrections during Task 4; 1.9 post-certification fix round). Approved by Todd at the plan gate, 2026-09-22 — the do-nothing row, the RB-1 NEEDS_WORK ceiling, and the WCAG waiver for the meeting-detected card are all confirmed (spec header + section 6).
 
 **Task plan cap**: this run is capped at 7 tasks by requester decision (consolidated from an 18-task plan). Grouping and AC assignment below are fixed by that decision, not re-derived.
 
@@ -100,3 +100,24 @@
 - Section 6 of the spec lists plan-gate confirmations already recorded (NEEDS_WORK ceiling until RB-1, WCAG waiver for the card) — surfaced again in Task 7's report as a status note, not re-litigated.
 - If any task's implementation reveals the spec is wrong or underspecified, stop and raise it as a spec change request — do not improvise around it.
 **Timeline expectations**: 7 tasks, capped by requester decision, ordered so each builds on the previous (REQ-1 core → REQ-1 UI → REQ-2 core → REQ-2 backend → REQ-2 card UI → REQ-2 index.html/settings → verification gate); run serially by the pipeline. REQ-1 (Tasks 1-2) is independently shippable; REQ-2 (Tasks 3-6) ships whole or is reported unsatisfied if it slips, per spec section 2 delivery order.
+
+
+## Pipeline outcome (2026-09-22)
+
+Run wf_963aa849-921: 7 tasks, 57 agents. Script verdict NEEDS_WORK (RB-1 open; Task 6 BLOCKED on a11y/test items; Tasks 2/4/5/7 raised spec change requests, all of which were also committed). Gate outcomes as recorded by the run, not as sign-offs:
+
+| Task | Dev attempts | code-review | evidence QA | cross-engine (codex) | security | a11y | Commit |
+|---|---|---|---|---|---|---|---|
+| 1 | 2 | PASS | FAIL then PASS | PASS | PASS | n/a | 4448ec9a |
+| 2 | 1 | PASS | PASS | PASS | n/a | PASS | 116c6ad4 |
+| 3 | 2 | FAIL then PASS | FAIL then PASS | PASS | PASS | n/a | de009542 |
+| 4 | 2 | PASS | PASS | PASS | PASS | n/a | 9dc44186 (spec 1.8) |
+| 5 | 2 | FAIL then PASS | PASS | FAIL then PASS | n/a | FAIL then PASS | 259c4b8e |
+| 6 | 3 | FAIL x3 | FAIL x2 | FAIL x3 | PASS | FAIL x2 | 5f678266 (blocked) |
+| 7 | 1 | PASS | PASS | PASS | PASS | n/a | 6730e26e |
+
+Final security pass: PASS with two Low findings (stale helper PID in `call_capture.rs`, pre-existing; snooze ledger temp file briefly 0644 before chmod). Certification: NEEDS_WORK. Cross-engine branch review: FAIL with six required fixes.
+
+Fix round (direct, approved by Todd): the six required fixes plus the Task 6 a11y items were applied in one commit on top of 6730e26e with tests (`ac-1.4`, `ac-1.8`, `ac-1.9`, `ac-1.12`, `ac-2.14` specs extended; `ac_2_8_direct_app_replacement_reports_the_ended_call` unit test). Verified locally: fmt clean, clippy clean, `cargo test -p minutes-app --bin minutes-app` 454 passed, Playwright 53 passed. `cargo test -p minutes-core --no-default-features` has one failing test (`summarize::tests::cancelling_owned_chat_process_stops_descendants_before_timeout`) that fails identically on `feat/notion-parity` in a clean worktree: pre-existing, not from this branch.
+
+The Quality Requirements boxes above are left unchecked on purpose: they describe agent sign-offs that this run's gates recorded per task in the table, not as separate artifacts. RB-1 (Todd's click test in Minutes Dev) is open.

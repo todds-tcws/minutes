@@ -123,3 +123,53 @@ test('the prompt_card toggle and ignored-apps list reflect the persisted value a
   await expect(page.locator('#settings-ignored-apps-list')).toContainText('Webex');
   await expect(page.locator('#settings-ignored-apps-list')).not.toContainText('Slack');
 });
+
+test('removing an ignored app moves focus to the next Remove button, then to the empty note', async ({ page }) => {
+  await openCallDetectionSettings(page, {
+    setDefault,
+    settings: settingsFixture({ call_detection: { ...settingsFixture().call_detection, ignored_apps: ['Slack', 'Webex'] } }),
+  });
+  await setDefault(page, 'cmd_set_setting', {});
+  const list = page.locator('#settings-ignored-apps-list');
+  await expect(list.locator('button')).toHaveCount(2);
+
+  // The stub returns the same settings for every cmd_get_settings call, so
+  // hand it the post-removal state before each click.
+  await setDefault(page, 'cmd_get_settings', settingsFixture({ call_detection: { ...settingsFixture().call_detection, ignored_apps: ['Slack', 'Webex'] } }));
+  await list.locator('button', { hasText: 'Remove' }).first().focus();
+  await list.locator('button', { hasText: 'Remove' }).first().click();
+  await expect(list.locator('button')).toHaveCount(1);
+  await expect(page.locator(':focus')).toHaveAttribute('aria-label', 'Remove Webex');
+
+  await setDefault(page, 'cmd_get_settings', settingsFixture({ call_detection: { ...settingsFixture().call_detection, ignored_apps: ['Webex'] } }));
+  await list.locator('button', { hasText: 'Remove' }).first().click();
+  await expect(list.locator('button')).toHaveCount(0);
+  await expect(page.locator(':focus')).toHaveId('settings-ignored-apps-empty');
+});
+
+test('an Off toggle label is dimmed with a class that keeps 4.5:1 contrast, not with opacity', async ({ page }) => {
+  await openCallDetectionSettings(page, {
+    setDefault,
+    settings: settingsFixture({ call_detection: { ...settingsFixture().call_detection, prompt_card: false } }),
+  });
+  const toggle = page.locator('#settings-call-detection-prompt-card');
+  await expect(toggle).toHaveText('Off');
+  await expect(toggle).toHaveClass(/is-off/);
+  const ratio = await toggle.evaluate((el) => {
+    const lum = (c) => {
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+    };
+    const parse = (raw) => raw.match(/rgba?\(([^)]+)\)/)[1].split(',').slice(0, 3).map(Number);
+    const fg = parse(getComputedStyle(el).color);
+    const probe = document.createElement('span');
+    probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated').trim();
+    document.body.appendChild(probe);
+    const bg = parse(getComputedStyle(probe).color);
+    probe.remove();
+    const [a, b] = [lum(fg), lum(bg)];
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  });
+  expect(parseFloat(await toggle.evaluate((el) => getComputedStyle(el).opacity))).toBe(1);
+  expect(ratio).toBeGreaterThanOrEqual(4.5);
+});

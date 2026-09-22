@@ -81,6 +81,8 @@
       --text: #E8E4DA;
       --text-secondary: #6B6760;
       --text-tertiary: #3D3B38;
+      /* Muted label that still clears WCAG 4.5:1 on --bg-elevated (5.3:1 here). */
+      --toggle-off: #8C8880;
       --accent: #30D158;
       --accent-hover: #4ADE70;
       --accent-soft: rgba(48, 209, 88, 0.10);
@@ -159,6 +161,7 @@
         --text: #1A1916;
         --text-secondary: #8C8880;
         --text-tertiary: #BDB9B0;
+        --toggle-off: #6B6760; /* 4.7:1 on the light --bg-elevated */
         --accent: #C96B4E;
         --accent-hover: #B85A3E;
         --accent-soft: rgba(201, 107, 78, 0.10);
@@ -1772,6 +1775,8 @@
       margin-right: 8px;
       font-variant-numeric: tabular-nums;
     }
+
+    .btn.is-off { color: var(--toggle-off); }
 
     .live-pane-row--note {
       border-left: 3px solid var(--accent);
@@ -7120,7 +7125,7 @@
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Ignored apps</div>
-            <div class="about-controls-meta" id="settings-ignored-apps-empty">No ignored apps yet. Use "Never for
+            <div class="about-controls-meta" id="settings-ignored-apps-empty" tabindex="-1">No ignored apps yet. Use "Never for
               &lt;app&gt;" on the prompt card to add one.</div>
             <div id="settings-ignored-apps-list"></div>
           </div>
@@ -8797,17 +8802,27 @@
     }
 
     function liveViewShowPane() {
+      const changed = !liveView.shown;
       liveView.shown = true;
       livePane.classList.add('active');
+      // The pane lives inside .app-left, which the narrow-window policy
+      // collapses (and hides) below 720px. A live recording overrides that.
+      if (changed) syncNarrowLayout();
     }
 
-    // Also the AC-1.8 "user navigates to another view" hook: hiding here is
-    // safe to call unconditionally because the always-on tick loop re-shows
-    // the pane on its next tick if the recording is still active.
+    // Also the AC-1.8 "user navigates to another view" hook. The tick loop
+    // keeps the pane hidden while Settings is open and re-shows it once
+    // Settings closes, if the recording is still active.
     function liveViewHidePane() {
+      const changed = liveView.shown;
       liveView.shown = false;
       livePane.classList.remove('active');
       livePaneBanner.hidden = true;
+      if (changed) syncNarrowLayout();
+    }
+
+    function liveViewOtherViewOpen() {
+      return settingsOverlay.classList.contains('active');
     }
 
     function liveViewReset() {
@@ -8888,11 +8903,19 @@
       const totalNotes = page.total_notes || 0;
 
       if (totalLines < liveView.afterLine || totalNotes < liveView.afterNote) {
+        // This page was filtered by the old cursors, so it may be missing
+        // rows 1..cursor of the new file. Drop it; the next tick re-reads
+        // both sources from cursor zero (AC-1.4).
         liveViewReset();
+        return false;
       }
 
-      const items = lines.map((l) => ({ kind: 'line', offset_ms: l.offset_ms, data: l }))
-        .concat(notes.map((n) => ({ kind: 'note', offset_ms: n.offset_ms, data: n })));
+      // The backend already filters by cursor; dropping anything at or below
+      // it here makes a duplicated or replayed page harmless.
+      const items = lines.filter((l) => l.line > liveView.afterLine)
+        .map((l) => ({ kind: 'line', offset_ms: l.offset_ms, data: l }))
+        .concat(notes.filter((n) => n.note > liveView.afterNote)
+          .map((n) => ({ kind: 'note', offset_ms: n.offset_ms, data: n })));
       items.sort((a, b) => a.offset_ms - b.offset_ms);
 
       items.forEach((item) => {
@@ -8969,8 +8992,12 @@
         }
 
         if (!liveView.wasRecording) liveViewReset();
-        liveViewShowPane();
-        livePaneBanner.hidden = true;
+        if (liveViewOtherViewOpen()) {
+          if (liveView.shown) liveViewHidePane();
+        } else {
+          liveViewShowPane();
+          livePaneBanner.hidden = true;
+        }
         liveView.wasRecording = true;
 
         const nearBottom = liveViewIsNearBottom();
@@ -13089,7 +13116,8 @@
         return false;
       }
       b.textContent = on ? 'On' : 'Off';
-      b.style.opacity = on ? '1' : '0.5';
+      // A class, not opacity: 50% opacity of --text lands under 4.5:1 (WCAG 1.4.3).
+      b.classList.toggle('is-off', !on);
       return true;
     }
     function desktopContextStateLabel(state, filtered = false, limited = false) {
@@ -13923,6 +13951,9 @@
       }
     }
     async function removeIgnoredApp(app) {
+      const list = document.getElementById('settings-ignored-apps-list');
+      const buttons = Array.from(list.querySelectorAll('button'));
+      const removedIndex = buttons.findIndex((b) => b.getAttribute('aria-label') === `Remove ${app}`);
       try {
         const s = await invoke('cmd_get_settings');
         const next = (s.call_detection.ignored_apps || []).filter((a) => a !== app);
@@ -13931,6 +13962,12 @@
         // used elsewhere (allowed_apps/emails/etc.) would corrupt.
         await invoke('cmd_set_setting', { section: 'call_detection', key: 'ignored_apps', value: JSON.stringify(next) });
         renderIgnoredApps(next);
+        // The rebuild destroyed the focused Remove button; land on the next
+        // one (or the empty note) so a keyboard user can keep going.
+        const remaining = list.querySelectorAll('button');
+        const target = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)]
+          || document.getElementById('settings-ignored-apps-empty');
+        if (target) target.focus();
       } catch (e) { console.error('remove ignored app:', e); }
     }
 
@@ -15136,13 +15173,16 @@
       const threshold = docOpen ? DOC_OPEN_COLLAPSE_WIDTH : SIDEBAR_AUTO_COLLAPSE_WIDTH;
       const width = window.innerWidth;
       const pinnedCollapsed = localStorage.getItem('minutes.sidebarCollapsed') === 'true';
-      if (width < threshold && !userExpandedSidebarThisSession && !pinnedCollapsed) {
+      // Collapsing hides every child of .app-left, including the recording
+      // bar and the live pane, so a live recording holds the pane open.
+      const wantAutoCollapse = width < threshold && !userExpandedSidebarThisSession && !pinnedCollapsed && !liveView.shown;
+      if (wantAutoCollapse) {
         if (!document.body.classList.contains('sidebar-collapsed')) {
           sidebarAutoCollapsed = true;
           document.body.classList.add('sidebar-collapsed');
           sidebarCollapseButton.classList.add('is-collapsed');
         }
-      } else if (width >= threshold && sidebarAutoCollapsed) {
+      } else if (sidebarAutoCollapsed) {
         sidebarAutoCollapsed = false;
         document.body.classList.remove('sidebar-collapsed');
         sidebarCollapseButton.classList.remove('is-collapsed');

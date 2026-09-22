@@ -21,8 +21,15 @@ test('recording bar controls stay inside the viewport with no page scroll; pane 
   await expect(page.locator('#recording-bar')).toHaveClass(/active/);
   await expect(page.locator('#live-pane-list .live-pane-row')).not.toHaveCount(0);
 
+  // Below 720px the list pane auto-collapses and `visibility: hidden`s every
+  // child of .app-left. A live recording must hold it open, otherwise the
+  // geometry below is measured on unpainted controls.
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#live-pane')).toBeVisible();
+
   const viewport = { width: 460, height: 520 };
   for (const id of ['btn-coach-recording', 'btn-note-inline', 'btn-stop']) {
+    await expect(page.locator(`#${id}`)).toBeVisible();
     const box = await page.locator(`#${id}`).boundingBox();
     expect(box, `#${id} should be visible/measurable`).not.toBeNull();
     expect(box.x).toBeGreaterThanOrEqual(0);
@@ -41,4 +48,17 @@ test('recording bar controls stay inside the viewport with no page scroll; pane 
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+});
+
+test('the list pane collapses again once the recording ends and the pane hides', async ({ page }) => {
+  await openIndex(page, { useClock: true });
+  await setDefault(page, 'cmd_live_view', liveViewPage({}));
+  await setDefault(page, 'cmd_capture_status', captureStatus({ recording: true }));
+  await page.clock.fastForward(1000);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+
+  await setDefault(page, 'cmd_capture_status', captureStatus({ recording: false, processing: false }));
+  await page.clock.fastForward(1000);
+  await expect(page.locator('#live-pane')).not.toHaveClass(/active/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
 });

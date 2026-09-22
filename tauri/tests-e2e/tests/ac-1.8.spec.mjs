@@ -37,3 +37,22 @@ test('stops polling cmd_live_view, keeps rows, shows the processing header, then
   await expect(page.locator('#live-pane')).toHaveClass(/active/);
   await expect(page.locator('#live-pane-list .live-pane-row')).toHaveCount(0);
 });
+
+test('opening Settings hides the pane and keeps it hidden across polling ticks; closing brings it back with its rows', async ({ page }) => {
+  await openIndex(page, { useClock: true });
+  await setDefault(page, 'cmd_live_view', liveViewPage({ lines: [{ line: 1, offset_ms: 1000, text: 'hi' }] }));
+  await setDefault(page, 'cmd_capture_status', captureStatus({ recording: true }));
+
+  await page.clock.fastForward(1000);
+  await expect(page.locator('#live-pane')).toHaveClass(/active/);
+
+  await page.locator('#btn-settings').click();
+  await expect(page.locator('#live-pane')).not.toHaveClass(/active/);
+  await page.clock.fastForward(3000); // three more ticks while Settings stays open
+  await expect(page.locator('#live-pane')).not.toHaveClass(/active/);
+
+  await page.locator('#btn-settings-close').click();
+  await page.clock.fastForward(1000);
+  await expect(page.locator('#live-pane')).toHaveClass(/active/);
+  await expect(page.locator('#live-pane-list .live-pane-row')).toHaveCount(1); // rows survived the hide
+});
